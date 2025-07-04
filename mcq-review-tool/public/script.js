@@ -30,7 +30,7 @@ function showUsernameModal() {
 }
 
 function connectWebSocket() {
-    ws = new WebSocket('wss://${window.location.host}');
+    ws = new WebSocket(`wss://${window.location.host}`);
 
     ws.onopen = () => {
         updateStatus('Connected to server');
