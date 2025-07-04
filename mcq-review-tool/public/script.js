@@ -7,30 +7,39 @@ let activityLog = [];
 let myClientId = 'client_' + Math.random().toString(36).substr(2, 9);
 let ws = null;
 
+// Tab management
+let tabs = {
+    default: {
+        id: 'default',
+        title: 'Default',
+        questions: [],
+        metadata: {
+            year: '',
+            type: '',
+            unit: ''
+        }
+    }
+};
+let currentTabId = 'default';
+let uploadAction = 'append'; // 'append' or 'newTab'
+let pendingFile = null; // Store file when creating new tab
+
 // Initialize the application
 function init() {
     setupEventListeners();
     connectWebSocket();
     updateStatus('Ready');
     showUsernameModal();
+    renderTabs();
 }
 
 function showUsernameModal() {
     const modal = document.getElementById('usernameModal');
     modal.classList.add('show');
-
-    document.getElementById('confirmUsername').addEventListener('click', () => {
-        const username = document.getElementById('usernameInput').value.trim();
-        if (username) {
-            currentUsername = username;
-            modal.classList.remove('show');
-            updateStatus(`Welcome, ${username}!`);
-        }
-    });
 }
 
 function connectWebSocket() {
-    ws = new WebSocket(`wss://${window.location.host}`);
+    ws = new WebSocket(`ws://${window.location.host}`);
 
     ws.onopen = () => {
         updateStatus('Connected to server');
@@ -41,11 +50,13 @@ function connectWebSocket() {
             const data = JSON.parse(e.data);
 
             if (data.type === 'INITIAL_STATE' || data.type === 'STATE_UPDATE') {
-                // Full state synchronization
-                questions = data.state.questions || [];
+                tabs = data.state.tabs || tabs;
+                currentTabId = data.state.currentTabId || currentTabId;
+                questions = tabs[currentTabId]?.questions || [];
                 locks = data.state.locks || {};
                 activityLog = data.state.activityLog || [];
 
+                renderTabs();
                 renderQuestions();
                 updateQuestionCount();
                 updateActivityLogDisplay();
@@ -96,87 +107,47 @@ function setupEventListeners() {
     uploadSection.addEventListener('dragover', handleDragOver);
     uploadSection.addEventListener('dragleave', handleDragLeave);
     uploadSection.addEventListener('drop', handleFileDrop);
-}
 
-function selectRole(role) {
-    if (!currentUsername) {
-        showAlert('Please enter your username first', 'error');
-        showUsernameModal();
-        return;
-    }
+    // Upload options
+    document.getElementById('appendOption').addEventListener('click', () => {
+        setUploadOption('append');
+    });
+    document.getElementById('newTabOption').addEventListener('click', () => {
+        setUploadOption('newTab');
+    });
 
-    currentRole = role;
-    document.getElementById('roleSelection').style.display = 'none';
-    document.getElementById('mainContent').style.display = 'block';
+    // Username modal
+    document.getElementById('confirmUsername').addEventListener('click', () => {
+        const username = document.getElementById('usernameInput').value.trim();
+        if (username) {
+            currentUsername = username;
+            document.getElementById('usernameModal').classList.remove('show');
+            updateStatus(`Welcome, ${username}!`);
+        }
+    });
+    document.getElementById('closeUsername').addEventListener('click', () => {
+        document.getElementById('usernameModal').classList.remove('show');
+    });
 
-    // Configure UI based on role
-    if (role === 'user') {
-        document.getElementById('uploadSection').style.display = 'none';
-        document.getElementById('exportBtn').style.display = 'none';
-    }
+    // Metadata modal
+    document.getElementById('confirmMetadata').addEventListener('click', processWithMetadata);
+    document.getElementById('closeMetadata').addEventListener('click', () => {
+        document.getElementById('metadataModal').classList.remove('show');
+        pendingFile = null;
+    });
 
-    updateStatus(`${currentUsername} (${role}) connected`);
-
-    // Log activity
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'ADD_ACTIVITY',
-            entry: {
-                timestamp: new Date().toISOString(),
-                event: `user_role_set_${role}`,
-                username: currentUsername,
-                role: role
-            }
-        }));
-    }
-}
-
-function updateStatus(message) {
-    document.getElementById('statusIndicator').textContent = message;
-}
-
-function updateActivityLogDisplay() {
-    const logEntries = document.getElementById('logEntries');
-    logEntries.innerHTML = '';
-
-    activityLog.slice(-50).reverse().forEach(entry => {
-        const div = document.createElement('div');
-        div.className = 'log-entry';
-        div.innerHTML = `
-      <div class="log-timestamp">${new Date(entry.timestamp).toLocaleString()}</div>
-      <div><strong>${entry.username}:</strong> ${formatLogEvent(entry)}</div>
-    `;
-        logEntries.appendChild(div);
+    // Tab switching
+    document.getElementById('tabsContainer').addEventListener('click', (e) => {
+        if (e.target.classList.contains('tab')) {
+            switchTab(e.target.dataset.tab);
+        }
     });
 }
 
-function formatLogEvent(entry) {
-    switch (entry.event) {
-        case 'user_role_set_admin':
-            return 'selected Admin role';
-        case 'user_role_set_user':
-            return 'selected User role';
-        case 'file_uploaded':
-            return `uploaded: ${entry.filename} (${entry.question_count} questions)`;
-        case 'question_updated':
-            return `updated question ${entry.question_index + 1}: ${entry.field}`;
-        case 'choice_updated':
-            return `updated choice in question ${entry.question_index + 1}`;
-        case 'feedback_image_added':
-            return `added image to question ${entry.question_index + 1}`;
-        case 'feedback_image_removed':
-            return `removed image from question ${entry.question_index + 1}`;
-        case 'question_locked':
-            return `locked question ${entry.question_index + 1}`;
-        case 'question_unlocked':
-            return `unlocked question ${entry.question_index + 1}`;
-        case 'csv_exported':
-            return 'exported CSV file';
-        case 'log_cleared':
-            return 'cleared activity log';
-        default:
-            return `${entry.event}`;
-    }
+function setUploadOption(option) {
+    uploadAction = option;
+    document.getElementById('appendOption').classList.toggle('selected', option === 'append');
+    document.getElementById('newTabOption').classList.toggle('selected', option === 'newTab');
 }
 
 function handleDragOver(e) {
@@ -194,23 +165,122 @@ function handleFileDrop(e) {
 
     const files = e.dataTransfer.files;
     if (files.length > 0) {
-        processFile(files[0]);
+        handleFileSelection(files[0]);
     }
 }
 
 function handleFileUpload(e) {
     const file = e.target.files[0];
     if (file) {
-        processFile(file);
+        handleFileSelection(file);
     }
 }
 
-function processFile(file) {
+function handleFileSelection(file) {
     if (!file.name.toLowerCase().endsWith('.txt')) {
         showAlert('Please upload a .txt file', 'error');
         return;
     }
 
+    if (uploadAction === 'newTab') {
+        pendingFile = file;
+        showMetadataModal();
+    } else {
+        processFile(file, currentTabId);
+    }
+}
+
+function showMetadataModal() {
+    document.getElementById('yearInput').value = '';
+    document.getElementById('typeInput').value = '';
+    document.getElementById('unitInput').value = '';
+    document.getElementById('metadataModal').classList.add('show');
+}
+
+function hideMetadataModal() {
+    document.getElementById('metadataModal').classList.remove('show');
+}
+
+function processWithMetadata() {
+    if (!pendingFile) {
+        showAlert('No file selected', 'error');
+        return;
+    }
+
+    const year = document.getElementById('yearInput').value.trim() || 'Unknown';
+    const type = document.getElementById('typeInput').value.trim() || 'Unknown';
+    const unit = document.getElementById('unitInput').value.trim() || 'Unknown';
+
+    hideMetadataModal();
+    createNewTab(year, type, unit, pendingFile);
+    pendingFile = null;
+}
+
+function createNewTab(year, type, unit, file) {
+    const tabId = 'tab_' + Date.now();
+    const tabTitle = `${year} - ${type} - ${unit}`;
+
+    tabs[tabId] = {
+        id: tabId,
+        title: tabTitle,
+        questions: [],
+        metadata: {
+            year: year,
+            type: type,
+            unit: unit
+        }
+    };
+
+    renderTabs();
+    switchTab(tabId);
+    processFile(file, tabId);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'CREATE_TAB',
+            tab: tabs[tabId],
+            username: currentUsername,
+            switchToTab: true
+        }));
+    }
+}
+
+function renderTabs() {
+    const container = document.getElementById('tabsContainer');
+    container.innerHTML = '';
+
+    for (const tabId in tabs) {
+        const tab = tabs[tabId];
+        const tabElement = document.createElement('div');
+        tabElement.className = 'tab';
+        if (tabId === currentTabId) {
+            tabElement.classList.add('active');
+        }
+        tabElement.dataset.tab = tabId;
+        tabElement.textContent = tab.title;
+        container.appendChild(tabElement);
+    }
+}
+
+function switchTab(tabId) {
+    if (!tabs[tabId]) return;
+
+    currentTabId = tabId;
+    questions = tabs[tabId].questions;
+    renderTabs();
+    renderQuestions();
+    updateQuestionCount();
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'SWITCH_TAB',
+            tabId: tabId,
+            username: currentUsername
+        }));
+    }
+}
+
+function processFile(file, tabId) {
     const reader = new FileReader();
     reader.onload = function (e) {
         const content = e.target.result;
@@ -221,10 +291,20 @@ function processFile(file) {
             return;
         }
 
-        // Send to server
+        tabs[tabId].questions = [...tabs[tabId].questions, ...parsedQuestions];
+
+        if (tabId === currentTabId) {
+            questions = tabs[tabId].questions;
+        }
+
+        renderQuestions();
+        updateQuestionCount();
+        showAlert(`Successfully processed ${parsedQuestions.length} questions`, 'success');
+
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'ADD_QUESTIONS',
+                tabId: tabId,
                 questions: parsedQuestions,
                 username: currentUsername,
                 filename: file.name
@@ -295,9 +375,70 @@ function parseMCQContent(content) {
     return questions;
 }
 
+function selectRole(role) {
+    if (!currentUsername) {
+        showAlert('Please enter your username first', 'error');
+        showUsernameModal();
+        return;
+    }
+
+    currentRole = role;
+    document.getElementById('roleSelection').style.display = 'none';
+    document.getElementById('mainContent').style.display = 'block';
+
+    if (role === 'user') {
+        document.getElementById('uploadSection').style.display = 'none';
+        document.getElementById('exportBtn').style.display = 'none';
+    }
+
+    updateStatus(`${currentUsername} (${role}) connected`);
+    logActivity(`Selected ${role} role`);
+}
+
+function updateStatus(message) {
+    document.getElementById('statusIndicator').textContent = message;
+}
+
+function logActivity(message) {
+    const entry = {
+        timestamp: new Date().toISOString(),
+        event: message,
+        username: currentUsername
+    };
+    activityLog.push(entry);
+    updateActivityLogDisplay();
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'ADD_ACTIVITY',
+            entry: entry
+        }));
+    }
+}
+
+function updateActivityLogDisplay() {
+    const logEntries = document.getElementById('logEntries');
+    logEntries.innerHTML = '';
+
+    activityLog.slice(-10).reverse().forEach(entry => {
+        const div = document.createElement('div');
+        div.className = 'log-entry';
+        div.innerHTML = `
+            <div class="log-timestamp">${new Date(entry.timestamp).toLocaleString()}</div>
+            <div><strong>${entry.username}:</strong> ${entry.event}</div>
+        `;
+        logEntries.appendChild(div);
+    });
+}
+
 function renderQuestions() {
     const container = document.getElementById('questionsContainer');
     container.innerHTML = '';
+
+    if (!questions.length) {
+        container.innerHTML = '<div class="no-questions">No questions available. Upload a file to get started.</div>';
+        return;
+    }
 
     questions.forEach((question, index) => {
         container.appendChild(createQuestionCard(question, index));
@@ -320,106 +461,106 @@ function createQuestionCard(question, index) {
 
     const lockIndicator = isLocked ?
         `<div class="lock-indicator ${isLockedByMe ? 'editing' : 'locked'}">
-      ${isLockedByMe ? '🔒 You are editing' : `🔒 Locked by ${lockInfo.username}`}
-    </div>` : '';
+        ${isLockedByMe ? '🔒 You are editing' : `🔒 Locked by ${lockInfo.username}`}
+        </div>` : '';
 
-    const isEditable = currentRole && (!isLocked || isLockedByMe);
+    const isEditable = currentRole === 'admin' && (!isLocked || isLockedByMe);
     const readonlyAttr = isEditable ? '' : 'readonly';
     const disabledAttr = isEditable ? '' : 'disabled';
 
     card.innerHTML = `
-    ${lockIndicator}
-    <div class="question-header">
-      <div class="question-number">${index + 1}</div>
-      <div style="flex: 1;">
-        <div class="form-group">
-          <label>Question:</label>
-          <textarea class="form-control" rows="2" ${readonlyAttr}
-            id="question-${index}-text">${question.question}</textarea>
+        ${lockIndicator}
+        <div class="question-header">
+            <div class="question-number">${index + 1}</div>
+            <div style="flex: 1;">
+                <div class="form-group">
+                    <label>Question:</label>
+                    <textarea class="form-control" rows="2" ${readonlyAttr}
+                        id="question-${index}-text">${question.question}</textarea>
+                </div>
+            </div>
         </div>
-      </div>
-    </div>
-    
-    <div class="choices-grid">
-      ${question.choices.map((choice, choiceIndex) => `
-        <div class="choice-group">
-          <div class="choice-label">${String.fromCharCode(97 + choiceIndex)}</div>
-          <input type="text" class="choice-input ${choice === question.correct_answer ? 'correct' : ''}" 
-            value="${choice}" ${readonlyAttr}
-            id="choice-${index}-${choiceIndex}">
+        
+        <div class="choices-grid">
+            ${question.choices.map((choice, choiceIndex) => `
+                <div class="choice-group">
+                    <div class="choice-label">${String.fromCharCode(97 + choiceIndex)}</div>
+                    <input type="text" class="choice-input ${choice === question.correct_answer ? 'correct' : ''}" 
+                        value="${choice}" ${readonlyAttr}
+                        id="choice-${index}-${choiceIndex}">
+                </div>
+            `).join('')}
         </div>
-      `).join('')}
-    </div>
-    
-    <div class="answer-section">
-      <div class="form-group">
-        <label>Correct Answer:</label>
-        <select class="form-control" ${disabledAttr}
-          id="correct-answer-${index}">
-          ${question.choices.map(choice => `
-            <option value="${choice}" ${choice === question.correct_answer ? 'selected' : ''}>${choice}</option>
-          `).join('')}
-        </select>
-      </div>
-    </div>
-    
-    <div class="metadata-section">
-      <div class="form-group">
-        <label>Original Question Context:</label>
-        <input type="text" class="form-control" value="${question.original_question}" ${readonlyAttr}
-          id="original-question-${index}">
-      </div>
-      <div class="form-group">
-        <label>Original Answer:</label>
-        <input type="text" class="form-control" value="${question.original_answer}" ${readonlyAttr}
-          id="original-answer-${index}">
-      </div>
-      <div class="form-group">
-        <label>Tag:</label>
-        <input type="text" class="form-control" value="${question.tag}" ${readonlyAttr}
-          id="tag-${index}">
-      </div>
-    </div>
-    
-    <div class="feedback-section">
-      <label>Feedback Images:</label>
-      ${isEditable ? `
-        <div class="image-upload-area" id="image-upload-${index}">
-          <p>📷 Click to add feedback image</p>
-          <input type="file" id="imageInput-${index}" accept="image/*" style="display: none;">
+        
+        <div class="answer-section">
+            <div class="form-group">
+                <label>Correct Answer:</label>
+                <select class="form-control" ${disabledAttr}
+                    id="correct-answer-${index}">
+                    ${question.choices.map(choice => `
+                        <option value="${choice}" ${choice === question.correct_answer ? 'selected' : ''}>${choice}</option>
+                    `).join('')}
+                </select>
+            </div>
         </div>
-      ` : ''}
-      <div class="feedback-images" id="feedbackImages-${index}">
-        ${question.feedback_images.map((img, imgIndex) => `
-          <div class="feedback-image">
-            <img src="${img.image_data}" alt="Feedback image">
-            ${isEditable ? `<button class="remove-image" data-index="${index}" data-img-index="${imgIndex}">×</button>` : ''}
-          </div>
-        `).join('')}
-      </div>
-    </div>
-    
-    <div class="controls" style="margin-top: 20px;">
-      ${!isLocked ? `
-        <button class="btn btn-primary" id="edit-btn-${index}">
-          Edit Question
-        </button>
-      ` : isLockedByMe ? `
-        <button class="btn btn-success" id="done-btn-${index}">
-          Done Editing
-        </button>
-      ` : ''}
-    </div>
-  `;
+        
+        <div class="metadata-section">
+            <div class="form-group">
+                <label>Original Question Context:</label>
+                <input type="text" class="form-control" value="${question.original_question}" ${readonlyAttr}
+                    id="original-question-${index}">
+            </div>
+            <div class="form-group">
+                <label>Original Answer:</label>
+                <input type="text" class="form-control" value="${question.original_answer}" ${readonlyAttr}
+                    id="original-answer-${index}">
+            </div>
+            <div class="form-group">
+                <label>Tag:</label>
+                <input type="text" class="form-control" value="${question.tag}" ${readonlyAttr}
+                    id="tag-${index}">
+            </div>
+        </div>
+        
+        <div class="feedback-section">
+            <label>Feedback Images:</label>
+            ${isEditable ? `
+                <div class="image-upload-area" id="image-upload-${index}">
+                    <p>📷 Click to add feedback image</p>
+                    <input type="file" id="imageInput-${index}" accept="image/*" style="display: none;">
+                </div>
+            ` : ''}
+            <div class="feedback-images" id="feedbackImages-${index}">
+                ${question.feedback_images.map((img, imgIndex) => `
+                    <div class="feedback-image">
+                        <img src="${img.image_data}" alt="Feedback image">
+                        ${isEditable ? `<button class="remove-image" data-index="${index}" data-img-index="${imgIndex}">×</button>` : ''}
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        
+        <div class="controls" style="margin-top: 20px;">
+            ${!isLocked ? `
+                <button class="btn btn-primary" id="edit-btn-${index}">
+                    Edit Question
+                </button>
+            ` : isLockedByMe ? `
+                <button class="btn btn-success" id="done-btn-${index}">
+                    Done Editing
+                </button>
+            ` : ''}
+        </div>
+    `;
 
-    // Add event listeners
+    // Add event listeners for editable fields
     if (isEditable) {
-        // Text inputs
+        // Question text
         card.querySelector(`#question-${index}-text`).addEventListener('change', (e) => {
             updateQuestion(index, 'question', e.target.value);
         });
 
-        // Choice inputs
+        // Choices
         question.choices.forEach((_, choiceIndex) => {
             card.querySelector(`#choice-${index}-${choiceIndex}`).addEventListener('change', (e) => {
                 updateChoice(index, choiceIndex, e.target.value);
@@ -483,6 +624,44 @@ function createQuestionCard(question, index) {
     return card;
 }
 
+function updateQuestion(index, field, value) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const updatedQuestion = {
+            ...questions[index],
+            [field]: value
+        };
+
+        ws.send(JSON.stringify({
+            type: 'UPDATE_QUESTION',
+            index,
+            question: updatedQuestion,
+            clientId: myClientId,
+            username: currentUsername,
+            field
+        }));
+    }
+}
+
+function updateChoice(index, choiceIndex, value) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const updatedQuestion = { ...questions[index] };
+        updatedQuestion.choices[choiceIndex] = value;
+
+        if (questions[index].correct_answer === questions[index].choices[choiceIndex]) {
+            updatedQuestion.correct_answer = value;
+        }
+
+        ws.send(JSON.stringify({
+            type: 'UPDATE_QUESTION',
+            index,
+            question: updatedQuestion,
+            clientId: myClientId,
+            username: currentUsername,
+            field: `choice_${choiceIndex}`
+        }));
+    }
+}
+
 function lockQuestion(index) {
     if (!currentUsername) {
         showAlert('Please enter your username first', 'error');
@@ -511,47 +690,6 @@ function unlockQuestion(index) {
     }
 }
 
-function updateQuestion(index, field, value) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        // Create updated question object
-        const updatedQuestion = {
-            ...questions[index],
-            [field]: value
-        };
-
-        ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
-            index,
-            question: updatedQuestion,
-            clientId: myClientId,
-            username: currentUsername,
-            field
-        }));
-    }
-}
-
-function updateChoice(index, choiceIndex, value) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        // Create updated question object
-        const updatedQuestion = { ...questions[index] };
-        updatedQuestion.choices[choiceIndex] = value;
-
-        // Update correct answer if needed
-        if (questions[index].correct_answer === questions[index].choices[choiceIndex]) {
-            updatedQuestion.correct_answer = value;
-        }
-
-        ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
-            index,
-            question: updatedQuestion,
-            clientId: myClientId,
-            username: currentUsername,
-            field: `choice_${choiceIndex}`
-        }));
-    }
-}
-
 function uploadFeedbackImage(index) {
     document.getElementById(`imageInput-${index}`).click();
 }
@@ -570,7 +708,6 @@ function handleImageUpload(index, e) {
         const imageData = e.target.result;
 
         if (ws && ws.readyState === WebSocket.OPEN) {
-            // Create updated question object
             const updatedQuestion = { ...questions[index] };
             updatedQuestion.feedback_images = [
                 ...updatedQuestion.feedback_images,
@@ -592,7 +729,6 @@ function handleImageUpload(index, e) {
 
 function removeFeedbackImage(index, imageIndex) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        // Create updated question object
         const updatedQuestion = { ...questions[index] };
         updatedQuestion.feedback_images.splice(imageIndex, 1);
 
@@ -612,15 +748,19 @@ function updateQuestionCount() {
 }
 
 function exportCSV() {
-    if (questions.length === 0) {
+    const currentTab = tabs[currentTabId];
+    if (!currentTab || !currentTab.questions.length) {
         showAlert('No questions to export', 'error');
         return;
     }
 
     const csvRows = [];
 
-    // Header row
+    // Header row with metadata columns
     csvRows.push([
+        'year',
+        'type',
+        'unit',
         'question',
         'choices',
         'answer',
@@ -631,12 +771,15 @@ function exportCSV() {
     ]);
 
     // Data rows
-    questions.forEach(question => {
+    currentTab.questions.forEach(question => {
         const choicesStr = JSON.stringify(question.choices);
-        const feedbackFilenames = question.feedback_images.map(img => img.filename);
+        const feedbackFilenames = question.feedback_images.map(img => img.filename || '');
         const feedbackStr = JSON.stringify(feedbackFilenames);
 
         csvRows.push([
+            currentTab.metadata.year,
+            currentTab.metadata.type,
+            currentTab.metadata.unit,
             question.question,
             choicesStr,
             question.correct_answer,
@@ -663,24 +806,13 @@ function exportCSV() {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'mcq_questions.csv';
+    a.download = `mcq_${currentTab.metadata.year || 'export'}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
 
-    // Log activity
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'ADD_ACTIVITY',
-            entry: {
-                timestamp: new Date().toISOString(),
-                event: 'csv_exported',
-                username: currentUsername
-            }
-        }));
-    }
-
+    logActivity(`Exported CSV file for ${currentTab.title}`);
     showAlert('CSV file downloaded successfully', 'success');
 }
 

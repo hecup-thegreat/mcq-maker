@@ -14,9 +14,15 @@
             <div class="status-indicator" id="statusIndicator">Ready</div>
         </div>
 
+        <!-- Tabs Container -->
+        <div class="tabs-container" id="tabsContainer">
+            <div class="tab active" data-tab="default">Default</div>
+        </div>
+
         <!-- Username Modal -->
         <div class="modal" id="usernameModal">
             <div class="modal-content">
+                <button class="close-btn" id="closeUsername">&times;</button>
                 <h3>Enter Your Username</h3>
                 <input type="text" id="usernameInput" placeholder="Your name" autocomplete="off">
                 <button class="btn btn-primary" id="confirmUsername">Confirm</button>
@@ -48,6 +54,13 @@
                 <button class="upload-btn" id="uploadBtn">
                     Choose File
                 </button>
+                
+                <!-- Upload Options -->
+                <div class="upload-options">
+                    <div class="upload-option selected" id="appendOption">Append to Current</div>
+                    <div class="upload-option" id="newTabOption">Create New Tab</div>
+                </div>
+                
                 <div id="uploadStatus"></div>
             </div>
 
@@ -73,6 +86,31 @@
 
             <!-- Questions Container -->
             <div class="questions-container" id="questionsContainer"></div>
+        </div>
+    </div>
+
+    <!-- Metadata Modal -->
+    <div class="metadata-modal" id="metadataModal">
+        <div class="metadata-content">
+            <button class="close-btn" id="closeMetadata">&times;</button>
+            <h3>Document Metadata</h3>
+            <div class="metadata-fields">
+                <div class="metadata-field">
+                    <label>Year:</label>
+                    <input type="text" id="yearInput" class="form-control" placeholder="e.g., 2023">
+                </div>
+                <div class="metadata-field">
+                    <label>Type:</label>
+                    <input type="text" id="typeInput" class="form-control" placeholder="e.g., Exam">
+                </div>
+                <div class="metadata-field">
+                    <label>Unit:</label>
+                    <input type="text" id="unitInput" class="form-control" placeholder="e.g., Unit 1">
+                </div>
+            </div>
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-primary" id="confirmMetadata">Confirm</button>
+            </div>
         </div>
     </div>
 

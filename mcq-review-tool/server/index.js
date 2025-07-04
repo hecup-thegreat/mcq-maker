@@ -11,7 +11,19 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // Store application state
 let appState = {
-    questions: [],
+    tabs: {
+        default: {
+            id: 'default',
+            title: 'Default',
+            questions: [],
+            metadata: {
+                year: '',
+                type: '',
+                unit: ''
+            }
+        }
+    },
+    currentTabId: 'default',
     locks: {},
     activityLog: []
 };
@@ -38,14 +50,15 @@ wss.on('connection', (ws) => {
                             username: data.username
                         };
 
-                        // Log activity on server
-                        const entry = {
+                        // Log activity
+                        const lockEntry = {
                             timestamp: new Date().toISOString(),
                             event: 'question_locked',
                             username: data.username,
-                            question_index: data.index
+                            question_index: data.index,
+                            tabId: appState.currentTabId
                         };
-                        appState.activityLog.push(entry);
+                        appState.activityLog.push(lockEntry);
 
                         broadcast({
                             type: 'STATE_UPDATE',
@@ -58,14 +71,15 @@ wss.on('connection', (ws) => {
                     if (appState.locks[data.index]?.clientId === data.clientId) {
                         delete appState.locks[data.index];
 
-                        // Log activity on server
-                        const entry = {
+                        // Log activity
+                        const unlockEntry = {
                             timestamp: new Date().toISOString(),
                             event: 'question_unlocked',
                             username: data.username,
-                            question_index: data.index
+                            question_index: data.index,
+                            tabId: appState.currentTabId
                         };
-                        appState.activityLog.push(entry);
+                        appState.activityLog.push(unlockEntry);
 
                         broadcast({
                             type: 'STATE_UPDATE',
@@ -76,17 +90,47 @@ wss.on('connection', (ws) => {
 
                 case 'UPDATE_QUESTION':
                     if (appState.locks[data.index]?.clientId === data.clientId) {
-                        appState.questions[data.index] = data.question;
+                        // Update question in current tab
+                        const currentTab = appState.tabs[appState.currentTabId];
+                        if (currentTab) {
+                            currentTab.questions[data.index] = data.question;
+                        }
 
-                        // Log activity on server
-                        const entry = {
+                        // Log activity
+                        const updateEntry = {
                             timestamp: new Date().toISOString(),
                             event: 'question_updated',
                             username: data.username,
                             question_index: data.index,
-                            field: data.field
+                            field: data.field,
+                            tabId: appState.currentTabId
                         };
-                        appState.activityLog.push(entry);
+                        appState.activityLog.push(updateEntry);
+
+                        broadcast({
+                            type: 'STATE_UPDATE',
+                            state: appState
+                        });
+                    }
+                    break;
+
+                case 'CREATE_TAB':
+                    if (data.tab) {
+                        appState.tabs[data.tab.id] = data.tab;
+
+                        if (data.switchToTab) {
+                            appState.currentTabId = data.tab.id;
+                        }
+
+                        // Log activity
+                        const createEntry = {
+                            timestamp: new Date().toISOString(),
+                            event: 'new_tab_created',
+                            username: data.username,
+                            tabId: data.tab.id,
+                            tabTitle: data.tab.title
+                        };
+                        appState.activityLog.push(createEntry);
 
                         broadcast({
                             type: 'STATE_UPDATE',
@@ -96,23 +140,48 @@ wss.on('connection', (ws) => {
                     break;
 
                 case 'ADD_QUESTIONS':
-                    appState.questions = data.questions;
-                    appState.locks = {};
+                    if (data.tabId && appState.tabs[data.tabId]) {
+                        appState.tabs[data.tabId].questions = [
+                            ...appState.tabs[data.tabId].questions,
+                            ...data.questions
+                        ];
 
-                    // Log activity on server
-                    const entry = {
-                        timestamp: new Date().toISOString(),
-                        event: 'file_uploaded',
-                        username: data.username,
-                        filename: data.filename,
-                        question_count: data.questions.length
-                    };
-                    appState.activityLog.push(entry);
+                        // Log activity
+                        const addEntry = {
+                            timestamp: new Date().toISOString(),
+                            event: 'questions_added',
+                            username: data.username,
+                            filename: data.filename,
+                            question_count: data.questions.length,
+                            tabId: data.tabId
+                        };
+                        appState.activityLog.push(addEntry);
 
-                    broadcast({
-                        type: 'STATE_UPDATE',
-                        state: appState
-                    });
+                        broadcast({
+                            type: 'STATE_UPDATE',
+                            state: appState
+                        });
+                    }
+                    break;
+
+                case 'SWITCH_TAB':
+                    if (appState.tabs[data.tabId]) {
+                        appState.currentTabId = data.tabId;
+
+                        // Log activity
+                        const switchEntry = {
+                            timestamp: new Date().toISOString(),
+                            event: 'tab_switched',
+                            username: data.username,
+                            tabId: data.tabId
+                        };
+                        appState.activityLog.push(switchEntry);
+
+                        broadcast({
+                            type: 'STATE_UPDATE',
+                            state: appState
+                        });
+                    }
                     break;
 
                 case 'ADD_ACTIVITY':
