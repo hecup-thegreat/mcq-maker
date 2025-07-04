@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCQ Checker - Collaborative Review Tool</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>MCQ Checker</h1>
+            <p>Collaborative Multiple Choice Question Review Tool</p>
+            <div class="status-indicator" id="statusIndicator">Ready</div>
+        </div>
+
+        <!-- Username Modal -->
+        <div class="modal" id="usernameModal">
+            <div class="modal-content">
+                <h3>Enter Your Username</h3>
+                <input type="text" id="usernameInput" placeholder="Your name" autocomplete="off">
+                <button class="btn btn-primary" id="confirmUsername">Confirm</button>
+            </div>
+        </div>
+
+        <!-- Role Selection Screen -->
+        <div class="role-selection" id="roleSelection">
+            <h2>Select Your Role</h2>
+            <div class="role-buttons">
+                <button class="role-btn admin" data-role="admin">
+                    👨‍💼 Admin
+                    <br><small>Full access to all features</small>
+                </button>
+                <button class="role-btn user" data-role="user">
+                    👤 User
+                    <br><small>View and review questions</small>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Application -->
+        <div class="main-content" id="mainContent">
+            <!-- Upload Section (Admin Only) -->
+            <div class="upload-section" id="uploadSection">
+                <h3>📁 Upload MCQ Document</h3>
+                <p>Drag and drop your .txt file here or click to browse</p>
+                <input type="file" id="fileInput" accept=".txt" style="display: none;">
+                <button class="upload-btn" id="uploadBtn">
+                    Choose File
+                </button>
+                <div id="uploadStatus"></div>
+            </div>
+
+            <!-- Controls -->
+            <div class="controls" id="controls">
+                <button class="btn btn-success" id="exportBtn">
+                    📊 Export CSV
+                </button>
+                <button class="btn btn-info" id="activityLogBtn">
+                    📋 Activity Log
+                </button>
+                <span id="questionCount" style="margin-left: auto; font-weight: bold; color: #666;"></span>
+            </div>
+
+            <!-- Activity Log -->
+            <div class="activity-log" id="activityLog">
+                <div style="padding: 15px; background: #e9ecef; font-weight: bold; border-bottom: 1px solid #dee2e6;">
+                    Activity Log
+                    <button style="float: right; background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;" id="clearLogBtn">Clear</button>
+                </div>
+                <div id="logEntries"></div>
+            </div>
+
+            <!-- Questions Container -->
+            <div class="questions-container" id="questionsContainer"></div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
