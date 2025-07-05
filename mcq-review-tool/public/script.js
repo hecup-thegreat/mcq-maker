@@ -1,28 +1,19 @@
 // Global variables
 let currentRole = null;
 let currentUsername = "";
-let questions = [];
-let locks = {};
-let activityLog = [];
+let collections = [
+    {
+        name: "Default",
+        metadata: { year: "", type: "", unit: "" },
+        questions: [],
+        locks: {},
+        activityLog: []
+    }
+];
+let currentCollectionIndex = 0;
 let myClientId = 'client_' + Math.random().toString(36).substr(2, 9);
 let ws = null;
-
-// Tab management
-let tabs = {
-    default: {
-        id: 'default',
-        title: 'Default',
-        questions: [],
-        metadata: {
-            year: '',
-            type: '',
-            unit: ''
-        }
-    }
-};
-let currentTabId = 'default';
-let uploadAction = 'append'; // 'append' or 'newTab'
-let pendingFile = null; // Store file when creating new tab
+let reconnectAttempts = 0;
 
 // Initialize the application
 function init() {
@@ -30,19 +21,31 @@ function init() {
     connectWebSocket();
     updateStatus('Ready');
     showUsernameModal();
-    renderTabs();
+    renderCollectionTabs();
 }
 
 function showUsernameModal() {
     const modal = document.getElementById('usernameModal');
     modal.classList.add('show');
+
+    document.getElementById('confirmUsername').addEventListener('click', () => {
+        const username = document.getElementById('usernameInput').value.trim();
+        if (username) {
+            currentUsername = username;
+            modal.classList.remove('show');
+            updateStatus(`Welcome, ${username}!`);
+        }
+    });
 }
 
 function connectWebSocket() {
-    ws = new WebSocket(`ws://${window.location.host}`);
+    // Use wss:// for production, ws:// for local development
+    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(`${protocol}${window.location.host}`);
 
     ws.onopen = () => {
         updateStatus('Connected to server');
+        reconnectAttempts = 0;
     };
 
     ws.onmessage = (e) => {
@@ -50,13 +53,11 @@ function connectWebSocket() {
             const data = JSON.parse(e.data);
 
             if (data.type === 'INITIAL_STATE' || data.type === 'STATE_UPDATE') {
-                tabs = data.state.tabs || tabs;
-                currentTabId = data.state.currentTabId || currentTabId;
-                questions = tabs[currentTabId]?.questions || [];
-                locks = data.state.locks || {};
-                activityLog = data.state.activityLog || [];
+                // Full state synchronization
+                collections = data.state.collections || [];
+                currentCollectionIndex = data.state.currentCollectionIndex || 0;
 
-                renderTabs();
+                renderCollectionTabs();
                 renderQuestions();
                 updateQuestionCount();
                 updateActivityLogDisplay();
@@ -72,8 +73,10 @@ function connectWebSocket() {
     };
 
     ws.onclose = () => {
-        updateStatus('Disconnected');
-        setTimeout(connectWebSocket, 3000);
+        updateStatus(`Disconnected. Reconnecting in ${Math.min(10, reconnectAttempts)} seconds...`);
+        const delay = Math.min(10000, reconnectAttempts * 1000);
+        setTimeout(connectWebSocket, delay);
+        reconnectAttempts++;
     };
 }
 
@@ -108,46 +111,134 @@ function setupEventListeners() {
     uploadSection.addEventListener('dragleave', handleDragLeave);
     uploadSection.addEventListener('drop', handleFileDrop);
 
-    // Upload options
-    document.getElementById('appendOption').addEventListener('click', () => {
-        setUploadOption('append');
-    });
-    document.getElementById('newTabOption').addEventListener('click', () => {
-        setUploadOption('newTab');
-    });
-
-    // Username modal
-    document.getElementById('confirmUsername').addEventListener('click', () => {
-        const username = document.getElementById('usernameInput').value.trim();
-        if (username) {
-            currentUsername = username;
-            document.getElementById('usernameModal').classList.remove('show');
-            updateStatus(`Welcome, ${username}!`);
-        }
-    });
-    document.getElementById('closeUsername').addEventListener('click', () => {
-        document.getElementById('usernameModal').classList.remove('show');
-    });
-
-    // Metadata modal
-    document.getElementById('confirmMetadata').addEventListener('click', processWithMetadata);
-    document.getElementById('closeMetadata').addEventListener('click', () => {
-        document.getElementById('metadataModal').classList.remove('show');
-        pendingFile = null;
+    // Upload option change
+    document.querySelectorAll('input[name="uploadOption"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            const newCollectionDiv = document.getElementById('newCollectionMetadata');
+            newCollectionDiv.style.display =
+                document.querySelector('input[name="uploadOption"]:checked').value === 'new'
+                    ? 'block'
+                    : 'none';
+        });
     });
 
     // Tab switching
-    document.getElementById('tabsContainer').addEventListener('click', (e) => {
-        if (e.target.classList.contains('tab')) {
-            switchTab(e.target.dataset.tab);
+    document.getElementById('collectionTabs').addEventListener('click', (e) => {
+        if (e.target.classList.contains('tab-button')) {
+            switchCollection(parseInt(e.target.dataset.index));
         }
     });
 }
 
-function setUploadOption(option) {
-    uploadAction = option;
-    document.getElementById('appendOption').classList.toggle('selected', option === 'append');
-    document.getElementById('newTabOption').classList.toggle('selected', option === 'newTab');
+function renderCollectionTabs() {
+    const tabsContainer = document.getElementById('collectionTabs');
+    tabsContainer.innerHTML = '';
+
+    collections.forEach((collection, index) => {
+        const tab = document.createElement('button');
+        tab.className = `tab-button ${index === currentCollectionIndex ? 'active' : ''}`;
+        tab.dataset.index = index;
+        tab.textContent = collection.name;
+        tabsContainer.appendChild(tab);
+    });
+}
+
+function switchCollection(index) {
+    currentCollectionIndex = index;
+    renderCollectionTabs();
+    renderQuestions();
+    updateQuestionCount();
+    updateActivityLogDisplay();
+    updateStatus(`Switched to collection: ${collections[index].name}`);
+}
+
+function getCurrentCollection() {
+    return collections[currentCollectionIndex];
+}
+
+function selectRole(role) {
+    if (!currentUsername) {
+        showAlert('Please enter your username first', 'error');
+        showUsernameModal();
+        return;
+    }
+
+    currentRole = role;
+    document.getElementById('roleSelection').style.display = 'none';
+    document.getElementById('mainContent').style.display = 'block';
+
+    // Configure UI based on role
+    if (role === 'user') {
+        document.getElementById('uploadSection').style.display = 'none';
+        document.getElementById('exportBtn').style.display = 'none';
+    }
+
+    updateStatus(`${currentUsername} (${role}) connected`);
+
+    // Log activity
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'ADD_ACTIVITY',
+            entry: {
+                timestamp: new Date().toISOString(),
+                event: `user_role_set_${role}`,
+                username: currentUsername,
+                role: role
+            },
+            collectionIndex: currentCollectionIndex
+        }));
+    }
+}
+
+function updateStatus(message) {
+    document.getElementById('statusIndicator').textContent = message;
+}
+
+function updateActivityLogDisplay() {
+    const logEntries = document.getElementById('logEntries');
+    logEntries.innerHTML = '';
+
+    const currentCollection = getCurrentCollection();
+    currentCollection.activityLog.slice(-50).reverse().forEach(entry => {
+        const div = document.createElement('div');
+        div.className = 'log-entry';
+        div.innerHTML = `
+      <div class="log-timestamp">${new Date(entry.timestamp).toLocaleString()}</div>
+      <div><strong>${entry.username}:</strong> ${formatLogEvent(entry)}</div>
+    `;
+        logEntries.appendChild(div);
+    });
+}
+
+function formatLogEvent(entry) {
+    switch (entry.event) {
+        case 'user_role_set_admin':
+            return 'selected Admin role';
+        case 'user_role_set_user':
+            return 'selected User role';
+        case 'file_uploaded':
+            return `uploaded: ${entry.filename} (${entry.question_count} questions)`;
+        case 'question_updated':
+            return `updated question ${entry.question_index + 1}: ${entry.field}`;
+        case 'choice_updated':
+            return `updated choice in question ${entry.question_index + 1}`;
+        case 'feedback_image_added':
+            return `added image to question ${entry.question_index + 1}`;
+        case 'feedback_image_removed':
+            return `removed image from question ${entry.question_index + 1}`;
+        case 'question_locked':
+            return `locked question ${entry.question_index + 1}`;
+        case 'question_unlocked':
+            return `unlocked question ${entry.question_index + 1}`;
+        case 'csv_exported':
+            return 'exported CSV file';
+        case 'log_cleared':
+            return 'cleared activity log';
+        case 'collection_created':
+            return `created new collection: ${entry.collectionName}`;
+        default:
+            return `${entry.event}`;
+    }
 }
 
 function handleDragOver(e) {
@@ -165,152 +256,87 @@ function handleFileDrop(e) {
 
     const files = e.dataTransfer.files;
     if (files.length > 0) {
-        handleFileSelection(files[0]);
+        processFile(files[0]);
     }
 }
 
 function handleFileUpload(e) {
     const file = e.target.files[0];
     if (file) {
-        handleFileSelection(file);
+        processFile(file);
     }
+    // Reset file input to allow uploading same file again
+    e.target.value = '';
 }
 
-function handleFileSelection(file) {
+function processFile(file) {
     if (!file.name.toLowerCase().endsWith('.txt')) {
         showAlert('Please upload a .txt file', 'error');
         return;
     }
 
-    if (uploadAction === 'newTab') {
-        pendingFile = file;
-        showMetadataModal();
-    } else {
-        processFile(file, currentTabId);
-    }
-}
+    const uploadOption = document.querySelector('input[name="uploadOption"]:checked').value;
+    const isNewCollection = uploadOption === 'new';
 
-function showMetadataModal() {
-    document.getElementById('yearInput').value = '';
-    document.getElementById('typeInput').value = '';
-    document.getElementById('unitInput').value = '';
-    document.getElementById('metadataModal').classList.add('show');
-}
+    if (isNewCollection) {
+        const year = document.getElementById('collectionYear').value.trim();
+        const type = document.getElementById('collectionType').value.trim();
+        const unit = document.getElementById('collectionUnit').value.trim();
 
-function hideMetadataModal() {
-    document.getElementById('metadataModal').classList.remove('show');
-}
-
-function processWithMetadata() {
-    if (!pendingFile) {
-        showAlert('No file selected', 'error');
-        return;
-    }
-
-    const year = document.getElementById('yearInput').value.trim() || 'Unknown';
-    const type = document.getElementById('typeInput').value.trim() || 'Unknown';
-    const unit = document.getElementById('unitInput').value.trim() || 'Unknown';
-
-    hideMetadataModal();
-    createNewTab(year, type, unit, pendingFile);
-    pendingFile = null;
-}
-
-function createNewTab(year, type, unit, file) {
-    const tabId = 'tab_' + Date.now();
-    const tabTitle = `${year} - ${type} - ${unit}`;
-
-    tabs[tabId] = {
-        id: tabId,
-        title: tabTitle,
-        questions: [],
-        metadata: {
-            year: year,
-            type: type,
-            unit: unit
+        if (!year || !type || !unit) {
+            showAlert('Please fill all metadata fields for new collection', 'error');
+            return;
         }
-    };
-
-    renderTabs();
-    switchTab(tabId);
-    processFile(file, tabId);
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'CREATE_TAB',
-            tab: tabs[tabId],
-            username: currentUsername,
-            switchToTab: true
-        }));
     }
-}
 
-function renderTabs() {
-    const container = document.getElementById('tabsContainer');
-    container.innerHTML = '';
-
-    for (const tabId in tabs) {
-        const tab = tabs[tabId];
-        const tabElement = document.createElement('div');
-        tabElement.className = 'tab';
-        if (tabId === currentTabId) {
-            tabElement.classList.add('active');
-        }
-        tabElement.dataset.tab = tabId;
-        tabElement.textContent = tab.title;
-        container.appendChild(tabElement);
-    }
-}
-
-function switchTab(tabId) {
-    if (!tabs[tabId]) return;
-
-    currentTabId = tabId;
-    questions = tabs[tabId].questions;
-    renderTabs();
-    renderQuestions();
-    updateQuestionCount();
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'SWITCH_TAB',
-            tabId: tabId,
-            username: currentUsername
-        }));
-    }
-}
-
-function processFile(file, tabId) {
     const reader = new FileReader();
     reader.onload = function (e) {
         const content = e.target.result;
-        const parsedQuestions = parseMCQContent(content);
+        let parsedQuestions;
+
+        try {
+            parsedQuestions = parseMCQContent(content);
+        } catch (error) {
+            console.error('Error parsing file:', error);
+            showAlert('Error parsing file content. Please check the format.', 'error');
+            return;
+        }
 
         if (parsedQuestions.length === 0) {
             showAlert('No valid MCQ questions found in the file', 'error');
             return;
         }
 
-        tabs[tabId].questions = [...tabs[tabId].questions, ...parsedQuestions];
-
-        if (tabId === currentTabId) {
-            questions = tabs[tabId].questions;
-        }
-
-        renderQuestions();
-        updateQuestionCount();
-        showAlert(`Successfully processed ${parsedQuestions.length} questions`, 'success');
-
+        // Send to server
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-                type: 'ADD_QUESTIONS',
-                tabId: tabId,
+            const payload = {
+                type: isNewCollection ? 'CREATE_COLLECTION' : 'ADD_QUESTIONS',
                 questions: parsedQuestions,
                 username: currentUsername,
                 filename: file.name
-            }));
+            };
+
+            if (isNewCollection) {
+                payload.metadata = {
+                    year: document.getElementById('collectionYear').value.trim(),
+                    type: document.getElementById('collectionType').value.trim(),
+                    unit: document.getElementById('collectionUnit').value.trim()
+                };
+            } else {
+                payload.collectionIndex = currentCollectionIndex;
+            }
+
+            ws.send(JSON.stringify(payload));
+            showAlert(`File uploaded successfully to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
+        } else {
+            showAlert('Not connected to server. Please try again.', 'error');
         }
     };
+
+    reader.onerror = function () {
+        showAlert('Error reading file', 'error');
+    };
+
     reader.readAsText(file);
 }
 
@@ -375,72 +401,12 @@ function parseMCQContent(content) {
     return questions;
 }
 
-function selectRole(role) {
-    if (!currentUsername) {
-        showAlert('Please enter your username first', 'error');
-        showUsernameModal();
-        return;
-    }
-
-    currentRole = role;
-    document.getElementById('roleSelection').style.display = 'none';
-    document.getElementById('mainContent').style.display = 'block';
-
-    if (role === 'user') {
-        document.getElementById('uploadSection').style.display = 'none';
-        document.getElementById('exportBtn').style.display = 'none';
-    }
-
-    updateStatus(`${currentUsername} (${role}) connected`);
-    logActivity(`Selected ${role} role`);
-}
-
-function updateStatus(message) {
-    document.getElementById('statusIndicator').textContent = message;
-}
-
-function logActivity(message) {
-    const entry = {
-        timestamp: new Date().toISOString(),
-        event: message,
-        username: currentUsername
-    };
-    activityLog.push(entry);
-    updateActivityLogDisplay();
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'ADD_ACTIVITY',
-            entry: entry
-        }));
-    }
-}
-
-function updateActivityLogDisplay() {
-    const logEntries = document.getElementById('logEntries');
-    logEntries.innerHTML = '';
-
-    activityLog.slice(-10).reverse().forEach(entry => {
-        const div = document.createElement('div');
-        div.className = 'log-entry';
-        div.innerHTML = `
-            <div class="log-timestamp">${new Date(entry.timestamp).toLocaleString()}</div>
-            <div><strong>${entry.username}:</strong> ${entry.event}</div>
-        `;
-        logEntries.appendChild(div);
-    });
-}
-
 function renderQuestions() {
     const container = document.getElementById('questionsContainer');
     container.innerHTML = '';
 
-    if (!questions.length) {
-        container.innerHTML = '<div class="no-questions">No questions available. Upload a file to get started.</div>';
-        return;
-    }
-
-    questions.forEach((question, index) => {
+    const currentCollection = getCurrentCollection();
+    currentCollection.questions.forEach((question, index) => {
         container.appendChild(createQuestionCard(question, index));
     });
     updateQuestionCount();
@@ -451,7 +417,8 @@ function createQuestionCard(question, index) {
     card.className = 'question-card';
     card.id = `question-${index}`;
 
-    const lockInfo = locks[index];
+    const currentCollection = getCurrentCollection();
+    const lockInfo = currentCollection.locks[index];
     const isLocked = !!lockInfo;
     const isLockedByMe = isLocked && lockInfo.clientId === myClientId;
 
@@ -461,106 +428,106 @@ function createQuestionCard(question, index) {
 
     const lockIndicator = isLocked ?
         `<div class="lock-indicator ${isLockedByMe ? 'editing' : 'locked'}">
-        ${isLockedByMe ? '🔒 You are editing' : `🔒 Locked by ${lockInfo.username}`}
-        </div>` : '';
+      ${isLockedByMe ? '🔒 You are editing' : `🔒 Locked by ${lockInfo.username}`}
+    </div>` : '';
 
-    const isEditable = currentRole === 'admin' && (!isLocked || isLockedByMe);
+    const isEditable = currentRole && (!isLocked || isLockedByMe);
     const readonlyAttr = isEditable ? '' : 'readonly';
     const disabledAttr = isEditable ? '' : 'disabled';
 
     card.innerHTML = `
-        ${lockIndicator}
-        <div class="question-header">
-            <div class="question-number">${index + 1}</div>
-            <div style="flex: 1;">
-                <div class="form-group">
-                    <label>Question:</label>
-                    <textarea class="form-control" rows="2" ${readonlyAttr}
-                        id="question-${index}-text">${question.question}</textarea>
-                </div>
-            </div>
+    ${lockIndicator}
+    <div class="question-header">
+      <div class="question-number">${index + 1}</div>
+      <div style="flex: 1;">
+        <div class="form-group">
+          <label>Question:</label>
+          <textarea class="form-control" rows="2" ${readonlyAttr}
+            id="question-${index}-text">${question.question}</textarea>
         </div>
-        
-        <div class="choices-grid">
-            ${question.choices.map((choice, choiceIndex) => `
-                <div class="choice-group">
-                    <div class="choice-label">${String.fromCharCode(97 + choiceIndex)}</div>
-                    <input type="text" class="choice-input ${choice === question.correct_answer ? 'correct' : ''}" 
-                        value="${choice}" ${readonlyAttr}
-                        id="choice-${index}-${choiceIndex}">
-                </div>
-            `).join('')}
+      </div>
+    </div>
+    
+    <div class="choices-grid">
+      ${question.choices.map((choice, choiceIndex) => `
+        <div class="choice-group">
+          <div class="choice-label">${String.fromCharCode(97 + choiceIndex)}</div>
+          <input type="text" class="choice-input ${choice === question.correct_answer ? 'correct' : ''}" 
+            value="${choice}" ${readonlyAttr}
+            id="choice-${index}-${choiceIndex}">
         </div>
-        
-        <div class="answer-section">
-            <div class="form-group">
-                <label>Correct Answer:</label>
-                <select class="form-control" ${disabledAttr}
-                    id="correct-answer-${index}">
-                    ${question.choices.map(choice => `
-                        <option value="${choice}" ${choice === question.correct_answer ? 'selected' : ''}>${choice}</option>
-                    `).join('')}
-                </select>
-            </div>
+      `).join('')}
+    </div>
+    
+    <div class="answer-section">
+      <div class="form-group">
+        <label>Correct Answer:</label>
+        <select class="form-control" ${disabledAttr}
+          id="correct-answer-${index}">
+          ${question.choices.map(choice => `
+            <option value="${choice}" ${choice === question.correct_answer ? 'selected' : ''}>${choice}</option>
+          `).join('')}
+        </select>
+      </div>
+    </div>
+    
+    <div class="metadata-section">
+      <div class="form-group">
+        <label>Original Question Context:</label>
+        <input type="text" class="form-control" value="${question.original_question}" ${readonlyAttr}
+          id="original-question-${index}">
+      </div>
+      <div class="form-group">
+        <label>Original Answer:</label>
+        <input type="text" class="form-control" value="${question.original_answer}" ${readonlyAttr}
+          id="original-answer-${index}">
+      </div>
+      <div class="form-group">
+        <label>Tag:</label>
+        <input type="text" class="form-control" value="${question.tag}" ${readonlyAttr}
+          id="tag-${index}">
+      </div>
+    </div>
+    
+    <div class="feedback-section">
+      <label>Feedback Images:</label>
+      ${isEditable ? `
+        <div class="image-upload-area" id="image-upload-${index}">
+          <p>📷 Click to add feedback image</p>
+          <input type="file" id="imageInput-${index}" accept="image/*" style="display: none;">
         </div>
-        
-        <div class="metadata-section">
-            <div class="form-group">
-                <label>Original Question Context:</label>
-                <input type="text" class="form-control" value="${question.original_question}" ${readonlyAttr}
-                    id="original-question-${index}">
-            </div>
-            <div class="form-group">
-                <label>Original Answer:</label>
-                <input type="text" class="form-control" value="${question.original_answer}" ${readonlyAttr}
-                    id="original-answer-${index}">
-            </div>
-            <div class="form-group">
-                <label>Tag:</label>
-                <input type="text" class="form-control" value="${question.tag}" ${readonlyAttr}
-                    id="tag-${index}">
-            </div>
-        </div>
-        
-        <div class="feedback-section">
-            <label>Feedback Images:</label>
-            ${isEditable ? `
-                <div class="image-upload-area" id="image-upload-${index}">
-                    <p>📷 Click to add feedback image</p>
-                    <input type="file" id="imageInput-${index}" accept="image/*" style="display: none;">
-                </div>
-            ` : ''}
-            <div class="feedback-images" id="feedbackImages-${index}">
-                ${question.feedback_images.map((img, imgIndex) => `
-                    <div class="feedback-image">
-                        <img src="${img.image_data}" alt="Feedback image">
-                        ${isEditable ? `<button class="remove-image" data-index="${index}" data-img-index="${imgIndex}">×</button>` : ''}
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-        
-        <div class="controls" style="margin-top: 20px;">
-            ${!isLocked ? `
-                <button class="btn btn-primary" id="edit-btn-${index}">
-                    Edit Question
-                </button>
-            ` : isLockedByMe ? `
-                <button class="btn btn-success" id="done-btn-${index}">
-                    Done Editing
-                </button>
-            ` : ''}
-        </div>
-    `;
+      ` : ''}
+      <div class="feedback-images" id="feedbackImages-${index}">
+        ${question.feedback_images.map((img, imgIndex) => `
+          <div class="feedback-image">
+            <img src="${img.image_data}" alt="Feedback image">
+            ${isEditable ? `<button class="remove-image" data-index="${index}" data-img-index="${imgIndex}">×</button>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    
+    <div class="controls" style="margin-top: 20px;">
+      ${!isLocked ? `
+        <button class="btn btn-primary" id="edit-btn-${index}">
+          Edit Question
+        </button>
+      ` : isLockedByMe ? `
+        <button class="btn btn-success" id="done-btn-${index}">
+          Done Editing
+        </button>
+      ` : ''}
+    </div>
+  `;
 
-    // Add event listeners for editable fields
+    // Add event listeners
     if (isEditable) {
-        // Question text
+        // Text inputs
         card.querySelector(`#question-${index}-text`).addEventListener('change', (e) => {
             updateQuestion(index, 'question', e.target.value);
         });
 
-        // Choices
+        // Choice inputs
         question.choices.forEach((_, choiceIndex) => {
             card.querySelector(`#choice-${index}-${choiceIndex}`).addEventListener('change', (e) => {
                 updateChoice(index, choiceIndex, e.target.value);
@@ -624,44 +591,6 @@ function createQuestionCard(question, index) {
     return card;
 }
 
-function updateQuestion(index, field, value) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        const updatedQuestion = {
-            ...questions[index],
-            [field]: value
-        };
-
-        ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
-            index,
-            question: updatedQuestion,
-            clientId: myClientId,
-            username: currentUsername,
-            field
-        }));
-    }
-}
-
-function updateChoice(index, choiceIndex, value) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        const updatedQuestion = { ...questions[index] };
-        updatedQuestion.choices[choiceIndex] = value;
-
-        if (questions[index].correct_answer === questions[index].choices[choiceIndex]) {
-            updatedQuestion.correct_answer = value;
-        }
-
-        ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
-            index,
-            question: updatedQuestion,
-            clientId: myClientId,
-            username: currentUsername,
-            field: `choice_${choiceIndex}`
-        }));
-    }
-}
-
 function lockQuestion(index) {
     if (!currentUsername) {
         showAlert('Please enter your username first', 'error');
@@ -674,7 +603,8 @@ function lockQuestion(index) {
             type: 'LOCK_QUESTION',
             index,
             clientId: myClientId,
-            username: currentUsername
+            username: currentUsername,
+            collectionIndex: currentCollectionIndex
         }));
     }
 }
@@ -685,7 +615,53 @@ function unlockQuestion(index) {
             type: 'UNLOCK_QUESTION',
             index,
             clientId: myClientId,
-            username: currentUsername
+            username: currentUsername,
+            collectionIndex: currentCollectionIndex
+        }));
+    }
+}
+
+function updateQuestion(index, field, value) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        // Create updated question object
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = {
+            ...currentCollection.questions[index],
+            [field]: value
+        };
+
+        ws.send(JSON.stringify({
+            type: 'UPDATE_QUESTION',
+            index,
+            question: updatedQuestion,
+            clientId: myClientId,
+            username: currentUsername,
+            field,
+            collectionIndex: currentCollectionIndex
+        }));
+    }
+}
+
+function updateChoice(index, choiceIndex, value) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        // Create updated question object
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = { ...currentCollection.questions[index] };
+        updatedQuestion.choices[choiceIndex] = value;
+
+        // Update correct answer if needed
+        if (currentCollection.questions[index].correct_answer === currentCollection.questions[index].choices[choiceIndex]) {
+            updatedQuestion.correct_answer = value;
+        }
+
+        ws.send(JSON.stringify({
+            type: 'UPDATE_QUESTION',
+            index,
+            question: updatedQuestion,
+            clientId: myClientId,
+            username: currentUsername,
+            field: `choice_${choiceIndex}`,
+            collectionIndex: currentCollectionIndex
         }));
     }
 }
@@ -708,7 +684,9 @@ function handleImageUpload(index, e) {
         const imageData = e.target.result;
 
         if (ws && ws.readyState === WebSocket.OPEN) {
-            const updatedQuestion = { ...questions[index] };
+            // Create updated question object
+            const currentCollection = getCurrentCollection();
+            const updatedQuestion = { ...currentCollection.questions[index] };
             updatedQuestion.feedback_images = [
                 ...updatedQuestion.feedback_images,
                 { image_data: imageData, filename: file.name }
@@ -720,7 +698,8 @@ function handleImageUpload(index, e) {
                 question: updatedQuestion,
                 clientId: myClientId,
                 username: currentUsername,
-                field: 'feedback_image'
+                field: 'feedback_image',
+                collectionIndex: currentCollectionIndex
             }));
         }
     };
@@ -729,7 +708,9 @@ function handleImageUpload(index, e) {
 
 function removeFeedbackImage(index, imageIndex) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        const updatedQuestion = { ...questions[index] };
+        // Create updated question object
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = { ...currentCollection.questions[index] };
         updatedQuestion.feedback_images.splice(imageIndex, 1);
 
         ws.send(JSON.stringify({
@@ -738,25 +719,27 @@ function removeFeedbackImage(index, imageIndex) {
             question: updatedQuestion,
             clientId: myClientId,
             username: currentUsername,
-            field: 'remove_feedback_image'
+            field: 'remove_feedback_image',
+            collectionIndex: currentCollectionIndex
         }));
     }
 }
 
 function updateQuestionCount() {
-    document.getElementById('questionCount').textContent = `${questions.length} questions loaded`;
+    const currentCollection = getCurrentCollection();
+    document.getElementById('questionCount').textContent = `${currentCollection.questions.length} questions loaded`;
 }
 
 function exportCSV() {
-    const currentTab = tabs[currentTabId];
-    if (!currentTab || !currentTab.questions.length) {
+    const currentCollection = getCurrentCollection();
+    if (currentCollection.questions.length === 0) {
         showAlert('No questions to export', 'error');
         return;
     }
 
     const csvRows = [];
 
-    // Header row with metadata columns
+    // Header row
     csvRows.push([
         'year',
         'type',
@@ -771,15 +754,15 @@ function exportCSV() {
     ]);
 
     // Data rows
-    currentTab.questions.forEach(question => {
+    currentCollection.questions.forEach(question => {
         const choicesStr = JSON.stringify(question.choices);
-        const feedbackFilenames = question.feedback_images.map(img => img.filename || '');
+        const feedbackFilenames = question.feedback_images.map(img => img.filename);
         const feedbackStr = JSON.stringify(feedbackFilenames);
 
         csvRows.push([
-            currentTab.metadata.year,
-            currentTab.metadata.type,
-            currentTab.metadata.unit,
+            currentCollection.metadata.year,
+            currentCollection.metadata.type,
+            currentCollection.metadata.unit,
             question.question,
             choicesStr,
             question.correct_answer,
@@ -806,13 +789,25 @@ function exportCSV() {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mcq_${currentTab.metadata.year || 'export'}.csv`;
+    a.download = 'mcq_questions.csv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
 
-    logActivity(`Exported CSV file for ${currentTab.title}`);
+    // Log activity
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'ADD_ACTIVITY',
+            entry: {
+                timestamp: new Date().toISOString(),
+                event: 'csv_exported',
+                username: currentUsername
+            },
+            collectionIndex: currentCollectionIndex
+        }));
+    }
+
     showAlert('CSV file downloaded successfully', 'success');
 }
 
@@ -825,7 +820,8 @@ function toggleActivityLog() {
 function clearActivityLog() {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'CLEAR_LOG'
+            type: 'CLEAR_LOG',
+            collectionIndex: currentCollectionIndex
         }));
     }
 }

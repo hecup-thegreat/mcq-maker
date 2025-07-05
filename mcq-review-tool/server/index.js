@@ -11,21 +11,16 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // Store application state
 let appState = {
-    tabs: {
-        default: {
-            id: 'default',
-            title: 'Default',
+    collections: [
+        {
+            name: "Default",
+            metadata: { year: "", type: "", unit: "" },
             questions: [],
-            metadata: {
-                year: '',
-                type: '',
-                unit: ''
-            }
+            locks: {},
+            activityLog: []
         }
-    },
-    currentTabId: 'default',
-    locks: {},
-    activityLog: []
+    ],
+    currentCollectionIndex: 0
 };
 
 wss.on('connection', (ws) => {
@@ -44,160 +39,31 @@ wss.on('connection', (ws) => {
 
             switch (data.type) {
                 case 'LOCK_QUESTION':
-                    if (!appState.locks[data.index] || appState.locks[data.index].clientId === data.clientId) {
-                        appState.locks[data.index] = {
-                            clientId: data.clientId,
-                            username: data.username
-                        };
-
-                        // Log activity
-                        const lockEntry = {
-                            timestamp: new Date().toISOString(),
-                            event: 'question_locked',
-                            username: data.username,
-                            question_index: data.index,
-                            tabId: appState.currentTabId
-                        };
-                        appState.activityLog.push(lockEntry);
-
-                        broadcast({
-                            type: 'STATE_UPDATE',
-                            state: appState
-                        });
-                    }
+                    handleLockQuestion(data);
                     break;
 
                 case 'UNLOCK_QUESTION':
-                    if (appState.locks[data.index]?.clientId === data.clientId) {
-                        delete appState.locks[data.index];
-
-                        // Log activity
-                        const unlockEntry = {
-                            timestamp: new Date().toISOString(),
-                            event: 'question_unlocked',
-                            username: data.username,
-                            question_index: data.index,
-                            tabId: appState.currentTabId
-                        };
-                        appState.activityLog.push(unlockEntry);
-
-                        broadcast({
-                            type: 'STATE_UPDATE',
-                            state: appState
-                        });
-                    }
+                    handleUnlockQuestion(data);
                     break;
 
                 case 'UPDATE_QUESTION':
-                    if (appState.locks[data.index]?.clientId === data.clientId) {
-                        // Update question in current tab
-                        const currentTab = appState.tabs[appState.currentTabId];
-                        if (currentTab) {
-                            currentTab.questions[data.index] = data.question;
-                        }
-
-                        // Log activity
-                        const updateEntry = {
-                            timestamp: new Date().toISOString(),
-                            event: 'question_updated',
-                            username: data.username,
-                            question_index: data.index,
-                            field: data.field,
-                            tabId: appState.currentTabId
-                        };
-                        appState.activityLog.push(updateEntry);
-
-                        broadcast({
-                            type: 'STATE_UPDATE',
-                            state: appState
-                        });
-                    }
-                    break;
-
-                case 'CREATE_TAB':
-                    if (data.tab) {
-                        appState.tabs[data.tab.id] = data.tab;
-
-                        if (data.switchToTab) {
-                            appState.currentTabId = data.tab.id;
-                        }
-
-                        // Log activity
-                        const createEntry = {
-                            timestamp: new Date().toISOString(),
-                            event: 'new_tab_created',
-                            username: data.username,
-                            tabId: data.tab.id,
-                            tabTitle: data.tab.title
-                        };
-                        appState.activityLog.push(createEntry);
-
-                        broadcast({
-                            type: 'STATE_UPDATE',
-                            state: appState
-                        });
-                    }
+                    handleUpdateQuestion(data);
                     break;
 
                 case 'ADD_QUESTIONS':
-                    if (data.tabId && appState.tabs[data.tabId]) {
-                        appState.tabs[data.tabId].questions = [
-                            ...appState.tabs[data.tabId].questions,
-                            ...data.questions
-                        ];
-
-                        // Log activity
-                        const addEntry = {
-                            timestamp: new Date().toISOString(),
-                            event: 'questions_added',
-                            username: data.username,
-                            filename: data.filename,
-                            question_count: data.questions.length,
-                            tabId: data.tabId
-                        };
-                        appState.activityLog.push(addEntry);
-
-                        broadcast({
-                            type: 'STATE_UPDATE',
-                            state: appState
-                        });
-                    }
+                    handleAddQuestions(data);
                     break;
 
-                case 'SWITCH_TAB':
-                    if (appState.tabs[data.tabId]) {
-                        appState.currentTabId = data.tabId;
-
-                        // Log activity
-                        const switchEntry = {
-                            timestamp: new Date().toISOString(),
-                            event: 'tab_switched',
-                            username: data.username,
-                            tabId: data.tabId
-                        };
-                        appState.activityLog.push(switchEntry);
-
-                        broadcast({
-                            type: 'STATE_UPDATE',
-                            state: appState
-                        });
-                    }
+                case 'CREATE_COLLECTION':
+                    handleCreateCollection(data);
                     break;
 
                 case 'ADD_ACTIVITY':
-                    appState.activityLog.push(data.entry);
-                    broadcast({
-                        type: 'STATE_UPDATE',
-                        state: appState
-                    });
+                    handleAddActivity(data);
                     break;
 
                 case 'CLEAR_LOG':
-                    appState.activityLog = [];
-                    broadcast({
-                        type: 'STATE_UPDATE',
-                        state: appState
-                    });
+                    handleClearLog(data);
                     break;
             }
         } catch (error) {
@@ -205,6 +71,129 @@ wss.on('connection', (ws) => {
         }
     });
 });
+
+function handleLockQuestion(data) {
+    const collection = appState.collections[data.collectionIndex];
+    if (!collection.locks[data.index] || collection.locks[data.index].clientId === data.clientId) {
+        collection.locks[data.index] = {
+            clientId: data.clientId,
+            username: data.username
+        };
+
+        // Log activity
+        const entry = {
+            timestamp: new Date().toISOString(),
+            event: 'question_locked',
+            username: data.username,
+            question_index: data.index
+        };
+        collection.activityLog.push(entry);
+
+        broadcastState();
+    }
+}
+
+function handleUnlockQuestion(data) {
+    const collection = appState.collections[data.collectionIndex];
+    if (collection.locks[data.index]?.clientId === data.clientId) {
+        delete collection.locks[data.index];
+
+        // Log activity
+        const entry = {
+            timestamp: new Date().toISOString(),
+            event: 'question_unlocked',
+            username: data.username,
+            question_index: data.index
+        };
+        collection.activityLog.push(entry);
+
+        broadcastState();
+    }
+}
+
+function handleUpdateQuestion(data) {
+    const collection = appState.collections[data.collectionIndex];
+    if (collection.locks[data.index]?.clientId === data.clientId) {
+        collection.questions[data.index] = data.question;
+
+        // Log activity
+        const entry = {
+            timestamp: new Date().toISOString(),
+            event: 'question_updated',
+            username: data.username,
+            question_index: data.index,
+            field: data.field
+        };
+        collection.activityLog.push(entry);
+
+        broadcastState();
+    }
+}
+
+function handleAddQuestions(data) {
+    const collection = appState.collections[data.collectionIndex];
+    // Append new questions to existing ones
+    collection.questions = [...collection.questions, ...data.questions];
+    // Reset locks for this collection? Maybe not necessary, but we can keep existing locks
+    // collection.locks = {};
+
+    // Log activity
+    const entry = {
+        timestamp: new Date().toISOString(),
+        event: 'file_uploaded',
+        username: data.username,
+        filename: data.filename,
+        question_count: data.questions.length
+    };
+    collection.activityLog.push(entry);
+
+    broadcastState();
+}
+
+function handleCreateCollection(data) {
+    const collectionName = `${data.metadata.year} ${data.metadata.type} ${data.metadata.unit}`;
+    const newCollection = {
+        name: collectionName,
+        metadata: data.metadata,
+        questions: data.questions,
+        locks: {},
+        activityLog: []
+    };
+
+    appState.collections.push(newCollection);
+    appState.currentCollectionIndex = appState.collections.length - 1;
+
+    // Log activity
+    const entry = {
+        timestamp: new Date().toISOString(),
+        event: 'collection_created',
+        username: data.username,
+        collectionName: collectionName,
+        question_count: data.questions.length
+    };
+    newCollection.activityLog.push(entry);
+
+    broadcastState();
+}
+
+function handleAddActivity(data) {
+    const collection = appState.collections[data.collectionIndex];
+    collection.activityLog.push(data.entry);
+    broadcastState();
+}
+
+function handleClearLog(data) {
+    const collection = appState.collections[data.collectionIndex];
+    collection.activityLog = [];
+    broadcastState();
+}
+
+function broadcastState() {
+    broadcast({
+        type: 'STATE_UPDATE',
+        state: appState
+    });
+}
 
 function broadcast(data) {
     wss.clients.forEach(client => {
