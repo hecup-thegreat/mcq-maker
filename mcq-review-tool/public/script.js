@@ -15,26 +15,47 @@ let myClientId = 'client_' + Math.random().toString(36).substr(2, 9);
 let ws = null;
 let reconnectAttempts = 0;
 let activeFilter = null; // 'tag', 'feedback', 'both', or null
+const APP_STATE_KEY = 'mcq_app_state';
 
 // Initialize the application
 function init() {
+    // Try to load saved state
+    const stateLoaded = loadStateFromLocalStorage();
     setupEventListeners();
     connectWebSocket();
-    updateStatus('Ready');
-    showUsernameModal();
-    renderCollectionTabs();
+    if (stateLoaded) {
+        updateStatus('Restored previous session');
+        document.getElementById('roleSelection').style.display = 'none';
+        document.getElementById('mainContent').style.display = 'block';
+        if (currentRole === 'user') {
+            document.getElementById('uploadSection').style.display = 'none';
+            document.getElementById('exportBtn').style.display = 'none';
+        }
+        renderCollectionTabs();
+        renderQuestions();
+        updateQuestionCount();
+        updateActivityLogDisplay();
+    } else {
+        updateStatus('Ready');
+        showUsernameModal();
+        renderCollectionTabs();
+    }
 }
 
 function showUsernameModal() {
     const modal = document.getElementById('usernameModal');
+    // Pre-fill username if available
+    if (currentUsername) {
+        document.getElementById('usernameInput').value = currentUsername;
+    }
     modal.classList.add('show');
-
     document.getElementById('confirmUsername').addEventListener('click', () => {
         const username = document.getElementById('usernameInput').value.trim();
         if (username) {
             currentUsername = username;
             modal.classList.remove('show');
             updateStatus(`Welcome, ${username}!`);
+            saveStateToLocalStorage();
         }
     });
 }
@@ -43,21 +64,29 @@ function connectWebSocket() {
     // Use wss:// for production, ws:// for local development
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(`${protocol}${window.location.host}`);
-
     ws.onopen = () => {
         updateStatus('Connected to server');
         reconnectAttempts = 0;
+        // Send current state to server if we have one
+        if (collections.length > 0) {
+            ws.send(JSON.stringify({
+                type: 'STATE_UPDATE',
+                state: {
+                    collections,
+                    currentCollectionIndex
+                }
+            }));
+        }
     };
-
     ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-
             if (data.type === 'INITIAL_STATE' || data.type === 'STATE_UPDATE') {
                 // Full state synchronization
                 collections = data.state.collections || [];
                 currentCollectionIndex = data.state.currentCollectionIndex || 0;
-
+                // Save state to localStorage
+                saveStateToLocalStorage();
                 renderCollectionTabs();
                 renderQuestions();
                 updateQuestionCount();
@@ -67,18 +96,43 @@ function connectWebSocket() {
             console.error('Error processing message:', error);
         }
     };
-
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         updateStatus('Connection error');
     };
-
     ws.onclose = () => {
         updateStatus(`Disconnected. Reconnecting in ${Math.min(10, reconnectAttempts)} seconds...`);
         const delay = Math.min(10000, reconnectAttempts * 1000);
         setTimeout(connectWebSocket, delay);
         reconnectAttempts++;
     };
+}
+
+function saveStateToLocalStorage() {
+    const state = {
+        collections,
+        currentCollectionIndex,
+        currentUsername,
+        currentRole
+    };
+    localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
+}
+
+function loadStateFromLocalStorage() {
+    const savedState = localStorage.getItem(APP_STATE_KEY);
+    if (savedState) {
+        try {
+            const state = JSON.parse(savedState);
+            collections = state.collections || collections;
+            currentCollectionIndex = state.currentCollectionIndex || 0;
+            currentUsername = state.currentUsername || "";
+            currentRole = state.currentRole || null;
+            return true;
+        } catch (e) {
+            console.error('Error loading saved state:', e);
+        }
+    }
+    return false;
 }
 
 function setupEventListeners() {
@@ -169,6 +223,7 @@ function switchCollection(index) {
     updateActivityLogDisplay();
     updateStatus(`Switched to collection: ${collections[index].name}`);
     clearFilter(); // Clear filter when switching collections
+    saveStateToLocalStorage();
 }
 
 function deleteCollection(index) {
@@ -224,6 +279,8 @@ function selectRole(role) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    saveStateToLocalStorage();
 }
 
 function updateStatus(message) {
@@ -307,6 +364,7 @@ function handleFileUpload(e) {
     }
     // Reset file input to allow uploading same file again
     e.target.value = '';
+    saveStateToLocalStorage();
 }
 
 function processFile(file) {
@@ -447,35 +505,10 @@ function renderQuestions() {
 
     const currentCollection = getCurrentCollection();
     currentCollection.questions.forEach((question, index) => {
-        const questionCard = createQuestionCard(question, index);
-
-        // Apply filter if active
-        if (activeFilter) {
-            const tagMissing = question.tag.trim() === '';
-            const feedbackMissing = question.feedback_images.length === 0;
-
-            let shouldShow = false;
-
-            switch (activeFilter) {
-                case 'tag':
-                    shouldShow = tagMissing;
-                    break;
-                case 'feedback':
-                    shouldShow = feedbackMissing;
-                    break;
-                case 'both':
-                    shouldShow = tagMissing && feedbackMissing;
-                    break;
-            }
-
-            if (!shouldShow) {
-                questionCard.style.display = 'none';
-            }
-        }
-
-        container.appendChild(questionCard);
+        container.appendChild(createQuestionCard(question, index));
     });
     updateQuestionCount();
+    highlightMissingFields();
 }
 
 function createQuestionCard(question, index) {
@@ -692,6 +725,8 @@ function lockQuestion(index) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    saveStateToLocalStorage();
 }
 
 function unlockQuestion(index) {
@@ -704,6 +739,8 @@ function unlockQuestion(index) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    saveStateToLocalStorage();
 }
 
 function deleteQuestion(index) {
@@ -724,6 +761,8 @@ function deleteQuestion(index) {
             }));
         }
     }
+
+    saveStateToLocalStorage();
 }
 
 function updateQuestion(index, field, value) {
@@ -745,6 +784,9 @@ function updateQuestion(index, field, value) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    saveStateToLocalStorage();
+    highlightMissingFields();
 }
 
 function updateChoice(index, choiceIndex, value) {
@@ -769,6 +811,9 @@ function updateChoice(index, choiceIndex, value) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    saveStateToLocalStorage();
+    highlightMissingFields();
 }
 
 function uploadFeedbackImage(index) {
@@ -828,6 +873,9 @@ function removeFeedbackImage(index, imageIndex) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    saveStateToLocalStorage();
+    highlightMissingFields();
 }
 
 function updateQuestionCount() {
@@ -1000,11 +1048,70 @@ function clearFilter() {
     document.getElementById('filter-both-missing').checked = false;
     activeFilter = null;
 
-    renderQuestions();
+    // Remove all highlighting
+    const questions = document.querySelectorAll('.question-card');
+    questions.forEach(card => {
+        card.querySelectorAll('.missing-field').forEach(el => {
+            el.classList.remove('missing-field');
+        });
+        card.classList.remove('has-missing');
+    });
 
     // Update button states
     document.getElementById('applyFilterBtn').classList.remove('active');
     document.getElementById('clearFilterBtn').classList.remove('active');
+}
+
+function highlightMissingFields() {
+    const currentCollection = getCurrentCollection();
+    // First remove all highlighting
+    const questions = document.querySelectorAll('.question-card');
+    questions.forEach(card => {
+        card.querySelectorAll('.missing-field').forEach(el => {
+            el.classList.remove('missing-field');
+        });
+        card.classList.remove('has-missing');
+    });
+    if (!activeFilter) return;
+    // Apply new highlighting
+    currentCollection.questions.forEach((question, index) => {
+        const card = document.getElementById(`question-${index}`);
+        if (!card) return;
+        const tagMissing = question.tag.trim() === '';
+        const feedbackMissing = question.feedback_images.length === 0;
+        let shouldHighlight = false;
+        switch (activeFilter) {
+            case 'tag':
+                if (tagMissing) {
+                    card.querySelector('#tag-' + index).classList.add('missing-field');
+                    shouldHighlight = true;
+                }
+                break;
+            case 'feedback':
+                if (feedbackMissing) {
+                    card.querySelector('.feedback-section').classList.add('missing-field');
+                    shouldHighlight = true;
+                }
+                break;
+            case 'both':
+                if (tagMissing && feedbackMissing) {
+                    card.querySelector('#tag-' + index).classList.add('missing-field');
+                    card.querySelector('.feedback-section').classList.add('missing-field');
+                    shouldHighlight = true;
+                } else if (tagMissing) {
+                    card.querySelector('#tag-' + index).classList.add('missing-field');
+                    shouldHighlight = true;
+                } else if (feedbackMissing) {
+                    card.querySelector('.feedback-section').classList.add('missing-field');
+                    shouldHighlight = true;
+                }
+                break;
+        }
+        // Add card highlight if any field is missing
+        if (shouldHighlight) {
+            card.classList.add('has-missing');
+        }
+    });
 }
 
 // Initialize the application when the page loads
