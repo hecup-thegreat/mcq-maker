@@ -14,34 +14,28 @@ let currentCollectionIndex = 0;
 let myClientId = 'client_' + Math.random().toString(36).substr(2, 9);
 let ws = null;
 let reconnectAttempts = 0;
-let activeFilter = null;
+let activeFilter = null; // 'tag', 'feedback', 'both', or null
 const APP_STATE_KEY = 'mcq_app_state';
 let lockedQuestions = [];
-let lastServerUpdate = 0; // Timestamp of last server update
 
 // Initialize the application
 function init() {
     // Try to load saved state
     const stateLoaded = loadStateFromLocalStorage();
-
     setupEventListeners();
     connectWebSocket();
-
     if (stateLoaded) {
         updateStatus('Restored previous session');
         document.getElementById('roleSelection').style.display = 'none';
         document.getElementById('mainContent').style.display = 'block';
-
         if (currentRole === 'user') {
             document.getElementById('uploadSection').style.display = 'none';
             document.getElementById('exportBtn').style.display = 'none';
         }
-
         renderCollectionTabs();
         renderQuestions();
         updateQuestionCount();
         updateActivityLogDisplay();
-        highlightMissingFields();
     } else {
         updateStatus('Ready');
         showUsernameModal();
@@ -51,14 +45,11 @@ function init() {
 
 function showUsernameModal() {
     const modal = document.getElementById('usernameModal');
-
     // Pre-fill username if available
     if (currentUsername) {
-        document.getElementById('username极狐Input').value = currentUsername;
+        document.getElementById('usernameInput').value = currentUsername;
     }
-
     modal.classList.add('show');
-
     document.getElementById('confirmUsername').addEventListener('click', () => {
         const username = document.getElementById('usernameInput').value.trim();
         if (username) {
@@ -71,102 +62,31 @@ function showUsernameModal() {
 }
 
 function connectWebSocket() {
+    // Use wss:// for production, ws:// for local development
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(`${protocol}${window.location.host}`);
-
     ws.onopen = () => {
         updateStatus('Connected to server');
         reconnectAttempts = 0;
-
-        // Request current server state
-        ws.send(JSON.stringify({
-            type: 'REQUEST_STATE',
-            clientId: myClientId,
-            lastUpdate: lastServerUpdate
-        }));
+        // Send current state to server if we have one
+        if (collections.length > 0) {
+            ws.send(JSON.stringify({
+                type: 'STATE_UPDATE',
+                state: {
+                    collections,
+                    currentCollectionIndex
+                }
+            }));
+        }
     };
-
     ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-
-            if (data.type === 'FULL_STATE') {
+            if (data.type === 'INITIAL_STATE' || data.type === 'STATE_UPDATE') {
                 // Full state synchronization
-                lastServerUpdate = data.timestamp;
                 collections = data.state.collections || [];
                 currentCollectionIndex = data.state.currentCollectionIndex || 0;
-
-                saveStateToLocalStorage();
-                renderCollectionTabs();
-                renderQuestions();
-                updateQuestionCount();
-                updateActivityLogDisplay();
-                highlightMissingFields();
-            }
-            else if (data.type === 'STATE_UPDATE') {
-                // Handle incremental updates
-                lastServerUpdate = data.timestamp;
-
-                if (data.collectionIndex !== undefined) {
-                    const collection = collections[data.collectionIndex];
-
-                    if (data.action === 'ADD_QUESTIONS') {
-                        collection.questions.push(...data.questions);
-                    }
-                    else if (data.action === 'UPDATE_QUESTION') {
-                        collection.questions[data.index] = data.question;
-                    }
-                    else if (data.action === 'DELETE_QUESTION') {
-                        collection.questions.splice(data.index, 1);
-                    }
-                    else if (data.action === 'LOCK_QUESTION') {
-                        collection.locks[data.index] = data.lockInfo;
-                    }
-                    else if (data.action === 'UNLOCK_QUESTION') {
-                        delete collection.locks[data.index];
-                    }
-                    else if (data.action === 'ADD_ACT极狐IVITY') {
-                        collection.activityLog.push(data.entry);
-                    }
-                    else if (data.action === 'CREATE_COLLECTION') {
-                        collections.push({
-                            name: `${data.metadata.year} ${data.metadata.type}`,
-                            metadata: data.metadata,
-                            questions: data.questions,
-                            locks: {},
-                            activityLog: []
-                        });
-                        currentCollectionIndex = collections.length - 1;
-                    }
-                    else if (data.action === 'DELETE_COLLECTION') {
-                        collections.splice(data.collectionIndex, 1);
-                        if (currentCollectionIndex >= data.collectionIndex) {
-                            currentCollectionIndex = Math.max(0, currentCollectionIndex - 1);
-                        }
-                    }
-                }
-
-                saveStateToLocalStorage();
-                renderCollectionTabs();
-                renderQuestions();
-                updateQuestionCount();
-                updateActivityLogDisplay();
-                highlightMissingFields();
-            }
-            else if (data.type === 'RESET_CONFIRMATION') {
-                showAlert('Server has been reset to initial state', 'success');
-                // Reset local state to match server
-                collections = [
-                    {
-                        name: "Default",
-                        metadata: { year: "", type: "", unit: "" },
-                        questions: [],
-                        locks: {},
-                        activityLog: []
-                    }
-                ];
-                currentCollectionIndex = 0;
-                lastServerUpdate = data.timestamp;
+                // Save state to localStorage
                 saveStateToLocalStorage();
                 renderCollectionTabs();
                 renderQuestions();
@@ -177,18 +97,43 @@ function connectWebSocket() {
             console.error('Error processing message:', error);
         }
     };
-
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         updateStatus('Connection error');
     };
-
     ws.onclose = () => {
         updateStatus(`Disconnected. Reconnecting in ${Math.min(10, reconnectAttempts)} seconds...`);
         const delay = Math.min(10000, reconnectAttempts * 1000);
         setTimeout(connectWebSocket, delay);
         reconnectAttempts++;
     };
+}
+
+function saveStateToLocalStorage() {
+    const state = {
+        collections,
+        currentCollectionIndex,
+        currentUsername,
+        currentRole
+    };
+    localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
+}
+
+function loadStateFromLocalStorage() {
+    const savedState = localStorage.getItem(APP_STATE_KEY);
+    if (savedState) {
+        try {
+            const state = JSON.parse(savedState);
+            collections = state.collections || collections;
+            currentCollectionIndex = state.currentCollectionIndex || 0;
+            currentUsername = state.currentUsername || "";
+            currentRole = state.currentRole || null;
+            return true;
+        } catch (e) {
+            console.error('Error loading saved state:', e);
+        }
+    }
+    return false;
 }
 
 function setupEventListeners() {
@@ -233,51 +178,9 @@ function setupEventListeners() {
         });
     });
 
-    // Filter event listeners
+    // New filter event listeners
     document.getElementById('applyFilterBtn').addEventListener('click', applyFilter);
     document.getElementById('clearFilterBtn').addEventListener('click', clearFilter);
-
-    // Reset server button
-    document.getElementById('resetServerBtn').addEventListener('click', resetServer);
-}
-
-function resetServer() {
-    if (currentRole !== 'admin') {
-        showAlert('Only admins can reset the server', 'error');
-        return;
-    }
-
-    if (!confirm('Are you sure you want to reset the server? This will delete ALL data and cannot be undone.')) {
-        return;
-    }
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'RESET_SERVER',
-            clientId: myClientId,
-            username: currentUsername
-        }));
-    } else {
-        showAlert('Not connected to server. Reset will only affect local state.', 'error');
-        // Reset local state
-        collections = [
-            {
-                name: "Default",
-                metadata: { year: "", type: "", unit: "" },
-                questions: [],
-                locks: {},
-                activityLog: []
-            }
-        ];
-        currentCollectionIndex = 0;
-        lastServerUpdate = Date.now();
-        saveStateToLocalStorage();
-        renderCollectionTabs();
-        renderQuestions();
-        updateQuestionCount();
-        updateActivityLogDisplay();
-        showAlert('Local state has been reset', 'success');
-    }
 }
 
 function renderCollectionTabs() {
@@ -322,15 +225,14 @@ function switchCollection(index) {
             unlockQuestion(parseInt(questionIndex));
         }
     });
-
+    // ... rest of existing code ...
     currentCollectionIndex = index;
     renderCollectionTabs();
     renderQuestions();
     updateQuestionCount();
     updateActivityLogDisplay();
     updateStatus(`Switched to collection: ${collections[index].name}`);
-    clearFilter();
-
+    clearFilter(); // Clear filter when switching collections
     saveStateToLocalStorage();
 }
 
@@ -343,25 +245,11 @@ function deleteCollection(index) {
     if (confirm(`Are you sure you want to delete "${collections[index].name}" collection?`)) {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
-                type: 'STATE_UPDATE',
-                action: 'DELETE_COLLECTION',
+                type: 'DELETE_COLLECTION',
                 collectionIndex: index,
                 username: currentUsername
             }));
         }
-
-        // Remove locally immediately
-        collections.splice(index, 1);
-        if (currentCollectionIndex >= index) {
-            currentCollectionIndex = Math.max(0, currentCollectionIndex - 1);
-        }
-
-        renderCollectionTabs();
-        renderQuestions();
-        updateQuestionCount();
-        updateActivityLogDisplay();
-
-        saveStateToLocalStorage();
     }
 }
 
@@ -455,8 +343,6 @@ function formatLogEvent(entry) {
             return `created new collection: ${entry.collectionName}`;
         case 'collection_deleted':
             return `deleted collection: ${entry.collectionName}`;
-        case 'server_reset':
-            return 'reset server to initial state';
         default:
             return `${entry.event}`;
     }
@@ -488,6 +374,7 @@ function handleFileUpload(e) {
     }
     // Reset file input to allow uploading same file again
     e.target.value = '';
+    saveStateToLocalStorage();
 }
 
 function processFile(file) {
@@ -531,13 +418,10 @@ function processFile(file) {
         // Send to server
         if (ws && ws.readyState === WebSocket.OPEN) {
             const payload = {
-                type: 'STATE_UPDATE',
-                action: isNewCollection ? 'CREATE_COLLECTION' : 'ADD_QUESTIONS',
+                type: isNewCollection ? 'CREATE_COLLECTION' : 'ADD_QUESTIONS',
                 questions: parsedQuestions,
                 username: currentUsername,
-                filename: file.name,
-                clientId: myClientId,
-                collectionIndex: isNewCollection ? -1 : currentCollectionIndex
+                filename: file.name
             };
 
             if (isNewCollection) {
@@ -546,37 +430,15 @@ function processFile(file) {
                     type: document.getElementById('collectionType').value.trim(),
                     unit: document.getElementById('collectionUnit').value.trim()
                 };
+            } else {
+                payload.collectionIndex = currentCollectionIndex;
             }
 
             ws.send(JSON.stringify(payload));
             showAlert(`File uploaded successfully to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
         } else {
-            // Add directly to local state if not connected
-            if (isNewCollection) {
-                collections.push({
-                    name: `${document.getElementById('collectionYear').value.trim()} ${document.getElementById('collectionType').value.trim()}`,
-                    metadata: {
-                        year: document.getElementById('collectionYear').value.trim(),
-                        type: document.getElementById('collectionType').value.trim(),
-                        unit: document.getElementById('collectionUnit').value.trim()
-                    },
-                    questions: parsedQuestions,
-                    locks: {},
-                    activityLog: []
-                });
-                currentCollectionIndex = collections.length - 1;
-            } else {
-                getCurrentCollection().questions.push(...parsedQuestions);
-            }
-
-            renderCollectionTabs();
-            renderQuestions();
-            updateQuestionCount();
-
-            showAlert(`File uploaded locally to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
+            showAlert('Not connected to server. Please try again.', 'error');
         }
-
-        saveStateToLocalStorage();
     };
 
     reader.onerror = function () {
@@ -683,10 +545,11 @@ function createQuestionCard(question, index) {
     const disabledAttr = isEditable ? '' : 'disabled';
     const isDeletable = currentRole === 'admin' && (!isLocked || isLockedByMe);
 
+    // Modify the metadata section in the createQuestionCard function
     card.innerHTML = `
     ${lockIndicator}
     <div class="question-header">
-      <div class="question-number">${index + 1}</极狐div>
+      <div class="question-number">${index + 1}</div>
       <div style="flex: 1;">
         <div class="form-group">
           <label>Question:</label>
@@ -697,7 +560,7 @@ function createQuestionCard(question, index) {
       <div class="question-top-right">
         ${isDeletable ? `
           <button class="delete-question-btn" id="delete-btn-${index}">
-            <svg viewBox="0 极狐0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
             </svg>
             Delete
@@ -776,7 +639,7 @@ function createQuestionCard(question, index) {
         </button>
       ` : ''}
     </div>
-  `;
+`;
 
     // Add event listeners
     if (isEditable) {
@@ -863,59 +726,69 @@ function lockQuestion(index) {
         return;
     }
 
-    // Track locked question
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'LOCK_QUESTION',
+            index,
+            clientId: myClientId,
+            username: currentUsername,
+            collectionIndex: currentCollectionIndex
+        }));
+    }
+    saveStateToLocalStorage();
+    // Track locked questions
     lockedQuestions.push({
         collectionIndex: currentCollectionIndex,
         questionIndex: index
     });
+}
 
+function unlockQuestion(index) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            action: 'LOCK_QUESTION',
+            type: 'UNLOCK_QUESTION',
             index,
             clientId: myClientId,
             username: currentUsername,
             collectionIndex: currentCollectionIndex
         }));
     }
-
-    // Update UI immediately
-    const currentCollection = getCurrentCollection();
-    currentCollection.locks[index] = {
-        clientId: myClientId,
-        username: currentUsername,
-        timestamp: Date.now()
-    };
-
-    renderQuestions();
     saveStateToLocalStorage();
-}
-
-function unlockQuestion(index) {
     // Remove from locked questions
     lockedQuestions = lockedQuestions.filter(q =>
         !(q.collectionIndex === currentCollectionIndex && q.questionIndex === index)
     );
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            action: 'UNLOCK_QUESTION',
-            index,
-            clientId: myClientId,
-            username: currentUsername,
-            collectionIndex: currentCollectionIndex
-        }));
-    }
-
-    // Update UI immediately
-    const currentCollection = getCurrentCollection();
-    delete currentCollection.locks[index];
-
-    renderQuestions();
-    saveStateToLocalStorage();
 }
+
+function unlockAllQuestions() {
+    lockedQuestions.forEach(lock => {
+        const collection = collections[lock.collectionIndex];
+        if (collection && collection.locks[lock.questionIndex]) {
+            delete collection.locks[lock.questionIndex];
+        }
+    });
+    lockedQuestions = [];
+    // Update UI
+    renderQuestions();
+}
+
+window.addEventListener('beforeunload', function (e) {
+    // Try to unlock via WebSocket if connected
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        lockedQuestions.forEach(lock => {
+            ws.send(JSON.stringify({
+                type: 'UNLOCK_QUESTION',
+                index: lock.questionIndex,
+                clientId: myClientId,
+                username: currentUsername,
+                collectionIndex: lock.collectionIndex
+            }));
+        });
+    }
+    // Always unlock locally
+    unlockAllQuestions();
+    saveStateToLocalStorage();
+});
 
 function deleteQuestion(index) {
     if (!currentUsername) {
@@ -927,44 +800,35 @@ function deleteQuestion(index) {
     if (confirm('Are you sure you want to delete this question? This action cannot be undone.')) {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
-                type: 'STATE_UPDATE',
-                action: 'DELETE_QUESTION',
+                type: 'DELETE_QUESTION',
                 index,
                 clientId: myClientId,
                 username: currentUsername,
                 collectionIndex: currentCollectionIndex
             }));
         }
-
-        // Remove locally immediately
-        const currentCollection = getCurrentCollection();
-        currentCollection.questions.splice(index, 1);
-
-        // Remove lock if exists
-        if (currentCollection.locks[index]) {
-            delete currentCollection.locks[index];
-        }
-
-        renderQuestions();
-        saveStateToLocalStorage();
     }
+
+    saveStateToLocalStorage();
 }
 
 function updateQuestion(index, field, value) {
-    const currentCollection = getCurrentCollection();
-    currentCollection.questions[index][field] = value;
-
     if (ws && ws.readyState === WebSocket.OPEN) {
+        // Create updated question object
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = {
+            ...currentCollection.questions[index],
+            [field]: value
+        };
+
         ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            action: 'UPDATE_QUESTION',
-            collectionIndex: currentCollectionIndex,
+            type: 'UPDATE_QUESTION',
             index,
-            field,
-            value,
+            question: updatedQuestion,
             clientId: myClientId,
             username: currentUsername,
-            question: currentCollection.questions[index]
+            field,
+            collectionIndex: currentCollectionIndex
         }));
     }
 
@@ -973,26 +837,25 @@ function updateQuestion(index, field, value) {
 }
 
 function updateChoice(index, choiceIndex, value) {
-    const currentCollection = getCurrentCollection();
-    currentCollection.questions[index].choices[choiceIndex] = value;
-
-    // Update correct answer if needed
-    if (currentCollection.questions[index].correct_answer ===
-        currentCollection.questions[index].choices[choiceIndex]) {
-        currentCollection.questions[index].correct_answer = value;
-    }
-
     if (ws && ws.readyState === WebSocket.OPEN) {
+        // Create updated question object
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = { ...currentCollection.questions[index] };
+        updatedQuestion.choices[choiceIndex] = value;
+
+        // Update correct answer if needed
+        if (currentCollection.questions[index].correct_answer === currentCollection.questions[index].choices[choiceIndex]) {
+            updatedQuestion.correct_answer = value;
+        }
+
         ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            action: 'UPDATE_QUESTION',
-            collectionIndex: currentCollectionIndex,
+            type: 'UPDATE_QUESTION',
             index,
-            field: `choice_${choiceIndex}`,
-            value,
+            question: updatedQuestion,
             clientId: myClientId,
             username: currentUsername,
-            question: currentCollection.questions[index]
+            field: `choice_${choiceIndex}`,
+            collectionIndex: currentCollectionIndex
         }));
     }
 
@@ -1017,64 +880,79 @@ function handleImageUpload(index, e) {
     reader.onload = function (e) {
         const imageData = e.target.result;
 
-        // Update locally immediately
-        const currentCollection = getCurrentCollection();
-        const updatedQuestion = { ...currentCollection.questions[index] };
-        updatedQuestion.feedback_images = [
-            ...updatedQuestion.feedback_images,
-            { image_data: imageData, filename: file.name }
-        ];
-        currentCollection.questions[index] = updatedQuestion;
-
         if (ws && ws.readyState === WebSocket.OPEN) {
+            // Create updated question object
+            const currentCollection = getCurrentCollection();
+            const updatedQuestion = { ...currentCollection.questions[index] };
+            updatedQuestion.feedback_images = [
+                ...updatedQuestion.feedback_images,
+                { image_data: imageData, filename: file.name }
+            ];
+
             ws.send(JSON.stringify({
-                type: 'STATE_UPDATE',
-                action: 'UPDATE_QUESTION',
-                collectionIndex: currentCollectionIndex,
+                type: 'UPDATE_QUESTION',
                 index,
-                field: 'feedback_image',
-                value: file.name,
+                question: updatedQuestion,
                 clientId: myClientId,
                 username: currentUsername,
-                question: updatedQuestion
+                field: 'feedback_image',
+                collectionIndex: currentCollectionIndex
             }));
         }
-
-        renderQuestions();
-        saveStateToLocalStorage();
-        highlightMissingFields();
     };
     reader.readAsDataURL(file);
 }
 
 function removeFeedbackImage(index, imageIndex) {
-    // Update locally immediately
-    const currentCollection = getCurrentCollection();
-    const updatedQuestion = { ...currentCollection.questions[index] };
-    updatedQuestion.feedback_images.splice(imageIndex, 1);
-    currentCollection.questions[index] = updatedQuestion;
-
     if (ws && ws.readyState === WebSocket.OPEN) {
+        // Create updated question object
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = { ...currentCollection.questions[index] };
+        updatedQuestion.feedback_images.splice(imageIndex, 1);
+
         ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            action: 'REMOVE_FEEDBACK_IMAGE',
-            collectionIndex: currentCollectionIndex,
+            type: 'UPDATE_QUESTION',
             index,
-            imageIndex,
+            question: updatedQuestion,
             clientId: myClientId,
-            username: currentUsername
+            username: currentUsername,
+            field: 'remove_feedback_image',
+            collectionIndex: currentCollectionIndex
         }));
     }
 
-    renderQuestions();
     saveStateToLocalStorage();
     highlightMissingFields();
 }
 
 function updateQuestionCount() {
     const currentCollection = getCurrentCollection();
+    const totalQuestions = currentCollection.questions.length;
+
+    // Calculate visible questions
+    let visibleCount = totalQuestions;
+    if (activeFilter) {
+        visibleCount = 0;
+        currentCollection.questions.forEach(question => {
+            const tagMissing = question.tag.trim() === '';
+            const feedbackMissing = question.feedback_images.length === 0;
+
+            switch (activeFilter) {
+                case 'tag':
+                    if (tagMissing) visibleCount++;
+                    break;
+                case 'feedback':
+                    if (feedbackMissing) visibleCount++;
+                    break;
+                case 'both':
+                    if (tagMissing && feedbackMissing) visibleCount++;
+                    break;
+            }
+        });
+    }
+
     document.getElementById('questionCount').textContent =
-        `${currentCollection.questions.length} questions loaded`;
+        `${visibleCount} of ${totalQuestions} questions visible`;
 }
 
 function exportCSV() {
@@ -1167,18 +1045,10 @@ function toggleActivityLog() {
 function clearActivityLog() {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            action: 'CLEAR_LOG',
+            type: 'CLEAR_LOG',
             collectionIndex: currentCollectionIndex
         }));
     }
-
-    // Clear locally immediately
-    const currentCollection = getCurrentCollection();
-    currentCollection.activityLog = [];
-    updateActivityLogDisplay();
-
-    saveStateToLocalStorage();
 }
 
 function showAlert(message, type) {
@@ -1194,40 +1064,7 @@ function showAlert(message, type) {
     }, 5000);
 }
 
-function saveStateToLocalStorage() {
-    const state = {
-        collections,
-        currentCollectionIndex,
-        currentUsername,
-        currentRole,
-        lockedQuestions,
-        myClientId,
-        lastServerUpdate
-    };
-    localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
-}
-
-function loadStateFromLocalStorage() {
-    const savedState = localStorage.getItem(APP_STATE_KEY);
-    if (savedState) {
-        try {
-            const state = JSON.parse(savedState);
-            collections = state.collections || collections;
-            currentCollectionIndex = state.currentCollectionIndex || 0;
-            currentUsername = state.currentUsername || "";
-            currentRole = state.currentRole || null;
-            lockedQuestions = state.lockedQuestions || [];
-            myClientId = state.myClientId || myClientId;
-            lastServerUpdate = state.lastServerUpdate || 0;
-
-            return true;
-        } catch (e) {
-            console.error('Error loading saved state:', e);
-        }
-    }
-    return false;
-}
-
+// New filter functions
 function applyFilter() {
     const missingTag = document.getElementById('filter-missing-tag').checked;
     const missingFeedback = document.getElementById('filter-missing-feedback').checked;
@@ -1245,7 +1082,7 @@ function applyFilter() {
         activeFilter = null;
     }
 
-    highlightMissingFields();
+    renderQuestions();
 
     // Update button states
     document.getElementById('applyFilterBtn').classList.toggle('active', activeFilter !== null);
@@ -1274,7 +1111,6 @@ function clearFilter() {
 
 function highlightMissingFields() {
     const currentCollection = getCurrentCollection();
-
     // First remove all highlighting
     const questions = document.querySelectorAll('.question-card');
     questions.forEach(card => {
@@ -1283,22 +1119,17 @@ function highlightMissingFields() {
         });
         card.classList.remove('has-missing');
     });
-
     if (!activeFilter) return;
-
     // Apply new highlighting
     currentCollection.questions.forEach((question, index) => {
         const card = document.getElementById(`question-${index}`);
         if (!card) return;
-
         const tagMissing = question.tag.trim() === '';
         const feedbackMissing = question.feedback_images.length === 0;
-
         let shouldHighlight = false;
-
         switch (activeFilter) {
             case 'tag':
-                if (tag极狐Missing) {
+                if (tagMissing) {
                     card.querySelector('#tag-' + index).classList.add('missing-field');
                     shouldHighlight = true;
                 }
@@ -1323,53 +1154,12 @@ function highlightMissingFields() {
                 }
                 break;
         }
-
         // Add card highlight if any field is missing
         if (shouldHighlight) {
             card.classList.add('has-missing');
         }
     });
 }
-
-function unlockAllQuestions() {
-    // Unlock via WebSocket if connected
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        lockedQuestions.forEach(lock => {
-            ws.send(JSON.stringify({
-                type: 'STATE_UPDATE',
-                action: 'UNLOCK_QUESTION',
-                index: lock.questionIndex,
-                clientId: myClientId,
-                username: currentUsername,
-                collectionIndex: lock.collectionIndex
-            }));
-        });
-    }
-
-    // Unlock locally
-    lockedQuestions.forEach(lock => {
-        const collection = collections[lock.collectionIndex];
-        if (collection && collection.locks[lock.questionIndex]) {
-            delete collection.locks[lock.questionIndex];
-        }
-    });
-
-    lockedQuestions = [];
-    saveStateToLocalStorage();
-    renderQuestions();
-}
-
-// Handle page/tab closing
-window.addEventListener('beforeunload', function () {
-    unlockAllQuestions();
-});
-
-// Handle page visibility changes
-document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'hidden') {
-        unlockAllQuestions();
-    }
-});
 
 // Initialize the application when the page loads
 window.addEventListener('load', init);
