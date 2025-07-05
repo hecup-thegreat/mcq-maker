@@ -16,6 +16,7 @@ let ws = null;
 let reconnectAttempts = 0;
 let activeFilter = null; // 'tag', 'feedback', 'both', or null
 const APP_STATE_KEY = 'mcq_app_state';
+let lockedQuestions = [];
 
 // Initialize the application
 function init() {
@@ -216,6 +217,15 @@ function renderCollectionTabs() {
 }
 
 function switchCollection(index) {
+    // Unlock any questions in the current collection before switching
+    const currentCollection = getCurrentCollection();
+    Object.keys(currentCollection.locks).forEach(questionIndex => {
+        const lock = currentCollection.locks[questionIndex];
+        if (lock.clientId === myClientId) {
+            unlockQuestion(parseInt(questionIndex));
+        }
+    });
+    // ... rest of existing code ...
     currentCollectionIndex = index;
     renderCollectionTabs();
     renderQuestions();
@@ -725,8 +735,12 @@ function lockQuestion(index) {
             collectionIndex: currentCollectionIndex
         }));
     }
-
     saveStateToLocalStorage();
+    // Track locked questions
+    lockedQuestions.push({
+        collectionIndex: currentCollectionIndex,
+        questionIndex: index
+    });
 }
 
 function unlockQuestion(index) {
@@ -739,9 +753,42 @@ function unlockQuestion(index) {
             collectionIndex: currentCollectionIndex
         }));
     }
-
     saveStateToLocalStorage();
+    // Remove from locked questions
+    lockedQuestions = lockedQuestions.filter(q =>
+        !(q.collectionIndex === currentCollectionIndex && q.questionIndex === index)
+    );
 }
+
+function unlockAllQuestions() {
+    lockedQuestions.forEach(lock => {
+        const collection = collections[lock.collectionIndex];
+        if (collection && collection.locks[lock.questionIndex]) {
+            delete collection.locks[lock.questionIndex];
+        }
+    });
+    lockedQuestions = [];
+    // Update UI
+    renderQuestions();
+}
+
+window.addEventListener('beforeunload', function (e) {
+    // Try to unlock via WebSocket if connected
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        lockedQuestions.forEach(lock => {
+            ws.send(JSON.stringify({
+                type: 'UNLOCK_QUESTION',
+                index: lock.questionIndex,
+                clientId: myClientId,
+                username: currentUsername,
+                collectionIndex: lock.collectionIndex
+            }));
+        });
+    }
+    // Always unlock locally
+    unlockAllQuestions();
+    saveStateToLocalStorage();
+});
 
 function deleteQuestion(index) {
     if (!currentUsername) {
