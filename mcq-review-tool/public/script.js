@@ -14,7 +14,7 @@ let currentCollectionIndex = 0;
 let myClientId = 'client_' + Math.random().toString(36).substr(2, 9);
 let ws = null;
 let reconnectAttempts = 0;
-let activeFilter = null; // 'tag', 'feedback', 'both', or null
+let activeFilter = null;
 const APP_STATE_KEY = 'mcq_app_state';
 let lockedQuestions = [];
 
@@ -22,20 +22,25 @@ let lockedQuestions = [];
 function init() {
     // Try to load saved state
     const stateLoaded = loadStateFromLocalStorage();
+
     setupEventListeners();
     connectWebSocket();
+
     if (stateLoaded) {
         updateStatus('Restored previous session');
         document.getElementById('roleSelection').style.display = 'none';
         document.getElementById('mainContent').style.display = 'block';
+
         if (currentRole === 'user') {
             document.getElementById('uploadSection').style.display = 'none';
             document.getElementById('exportBtn').style.display = 'none';
         }
+
         renderCollectionTabs();
         renderQuestions();
         updateQuestionCount();
         updateActivityLogDisplay();
+        highlightMissingFields();
     } else {
         updateStatus('Ready');
         showUsernameModal();
@@ -45,11 +50,14 @@ function init() {
 
 function showUsernameModal() {
     const modal = document.getElementById('usernameModal');
+
     // Pre-fill username if available
     if (currentUsername) {
         document.getElementById('usernameInput').value = currentUsername;
     }
+
     modal.classList.add('show');
+
     document.getElementById('confirmUsername').addEventListener('click', () => {
         const username = document.getElementById('usernameInput').value.trim();
         if (username) {
@@ -65,75 +73,73 @@ function connectWebSocket() {
     // Use wss:// for production, ws:// for local development
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(`${protocol}${window.location.host}`);
+
     ws.onopen = () => {
         updateStatus('Connected to server');
         reconnectAttempts = 0;
-        // Send current state to server if we have one
-        if (collections.length > 0) {
+
+        // Send current state to server
+        ws.send(JSON.stringify({
+            type: 'STATE_UPDATE',
+            state: {
+                collections,
+                currentCollectionIndex
+            }
+        }));
+
+        // Restore locks after reconnect
+        lockedQuestions.forEach(lock => {
             ws.send(JSON.stringify({
-                type: 'STATE_UPDATE',
-                state: {
-                    collections,
-                    currentCollectionIndex
-                }
+                type: 'LOCK_QUESTION',
+                index: lock.questionIndex,
+                clientId: myClientId,
+                username: currentUsername,
+                collectionIndex: lock.collectionIndex
             }));
-        }
+        });
     };
+
     ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
+
             if (data.type === 'INITIAL_STATE' || data.type === 'STATE_UPDATE') {
-                // Full state synchronization
-                collections = data.state.collections || [];
-                currentCollectionIndex = data.state.currentCollectionIndex || 0;
-                // Save state to localStorage
-                saveStateToLocalStorage();
-                renderCollectionTabs();
-                renderQuestions();
-                updateQuestionCount();
-                updateActivityLogDisplay();
+                // Merge with local state instead of overwriting
+                const serverCollections = data.state.collections || [];
+                const serverCurrentIndex = data.state.currentCollectionIndex || 0;
+
+                // Update collections only if server has more data
+                if (serverCollections.length > collections.length ||
+                    serverCollections.some((c, i) => c.questions.length > (collections[i]?.questions.length || 0))) {
+                    collections = serverCollections;
+                    currentCollectionIndex = serverCurrentIndex;
+
+                    // Save merged state
+                    saveStateToLocalStorage();
+
+                    renderCollectionTabs();
+                    renderQuestions();
+                    updateQuestionCount();
+                    updateActivityLogDisplay();
+                    highlightMissingFields();
+                }
             }
         } catch (error) {
             console.error('Error processing message:', error);
         }
     };
+
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         updateStatus('Connection error');
     };
+
     ws.onclose = () => {
         updateStatus(`Disconnected. Reconnecting in ${Math.min(10, reconnectAttempts)} seconds...`);
         const delay = Math.min(10000, reconnectAttempts * 1000);
         setTimeout(connectWebSocket, delay);
         reconnectAttempts++;
     };
-}
-
-function saveStateToLocalStorage() {
-    const state = {
-        collections,
-        currentCollectionIndex,
-        currentUsername,
-        currentRole
-    };
-    localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
-}
-
-function loadStateFromLocalStorage() {
-    const savedState = localStorage.getItem(APP_STATE_KEY);
-    if (savedState) {
-        try {
-            const state = JSON.parse(savedState);
-            collections = state.collections || collections;
-            currentCollectionIndex = state.currentCollectionIndex || 0;
-            currentUsername = state.currentUsername || "";
-            currentRole = state.currentRole || null;
-            return true;
-        } catch (e) {
-            console.error('Error loading saved state:', e);
-        }
-    }
-    return false;
 }
 
 function setupEventListeners() {
@@ -178,7 +184,7 @@ function setupEventListeners() {
         });
     });
 
-    // New filter event listeners
+    // Filter event listeners
     document.getElementById('applyFilterBtn').addEventListener('click', applyFilter);
     document.getElementById('clearFilterBtn').addEventListener('click', clearFilter);
 }
@@ -225,14 +231,15 @@ function switchCollection(index) {
             unlockQuestion(parseInt(questionIndex));
         }
     });
-    // ... rest of existing code ...
+
     currentCollectionIndex = index;
     renderCollectionTabs();
     renderQuestions();
     updateQuestionCount();
     updateActivityLogDisplay();
     updateStatus(`Switched to collection: ${collections[index].name}`);
-    clearFilter(); // Clear filter when switching collections
+    clearFilter();
+
     saveStateToLocalStorage();
 }
 
@@ -250,6 +257,19 @@ function deleteCollection(index) {
                 username: currentUsername
             }));
         }
+
+        // Remove locally immediately
+        collections.splice(index, 1);
+        if (currentCollectionIndex >= index) {
+            currentCollectionIndex = Math.max(0, currentCollectionIndex - 1);
+        }
+
+        renderCollectionTabs();
+        renderQuestions();
+        updateQuestionCount();
+        updateActivityLogDisplay();
+
+        saveStateToLocalStorage();
     }
 }
 
@@ -374,7 +394,6 @@ function handleFileUpload(e) {
     }
     // Reset file input to allow uploading same file again
     e.target.value = '';
-    saveStateToLocalStorage();
 }
 
 function processFile(file) {
@@ -437,8 +456,32 @@ function processFile(file) {
             ws.send(JSON.stringify(payload));
             showAlert(`File uploaded successfully to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
         } else {
-            showAlert('Not connected to server. Please try again.', 'error');
+            // Add directly to local state if not connected
+            if (isNewCollection) {
+                collections.push({
+                    name: `${document.getElementById('collectionYear').value.trim()} ${document.getElementById('collectionType').value.trim()}`,
+                    metadata: {
+                        year: document.getElementById('collectionYear').value.trim(),
+                        type: document.getElementById('collectionType').value.trim(),
+                        unit: document.getElementById('collectionUnit').value.trim()
+                    },
+                    questions: parsedQuestions,
+                    locks: {},
+                    activityLog: []
+                });
+                currentCollectionIndex = collections.length - 1;
+            } else {
+                getCurrentCollection().questions.push(...parsedQuestions);
+            }
+
+            renderCollectionTabs();
+            renderQuestions();
+            updateQuestionCount();
+
+            showAlert(`File uploaded locally to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
         }
+
+        saveStateToLocalStorage();
     };
 
     reader.onerror = function () {
@@ -545,7 +588,6 @@ function createQuestionCard(question, index) {
     const disabledAttr = isEditable ? '' : 'disabled';
     const isDeletable = currentRole === 'admin' && (!isLocked || isLockedByMe);
 
-    // Modify the metadata section in the createQuestionCard function
     card.innerHTML = `
     ${lockIndicator}
     <div class="question-header">
@@ -639,7 +681,7 @@ function createQuestionCard(question, index) {
         </button>
       ` : ''}
     </div>
-`;
+  `;
 
     // Add event listeners
     if (isEditable) {
@@ -726,6 +768,12 @@ function lockQuestion(index) {
         return;
     }
 
+    // Track locked question
+    lockedQuestions.push({
+        collectionIndex: currentCollectionIndex,
+        questionIndex: index
+    });
+
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'LOCK_QUESTION',
@@ -735,15 +783,25 @@ function lockQuestion(index) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    // Update UI immediately
+    const currentCollection = getCurrentCollection();
+    currentCollection.locks[index] = {
+        clientId: myClientId,
+        username: currentUsername,
+        timestamp: Date.now()
+    };
+
+    renderQuestions();
     saveStateToLocalStorage();
-    // Track locked questions
-    lockedQuestions.push({
-        collectionIndex: currentCollectionIndex,
-        questionIndex: index
-    });
 }
 
 function unlockQuestion(index) {
+    // Remove from locked questions
+    lockedQuestions = lockedQuestions.filter(q =>
+        !(q.collectionIndex === currentCollectionIndex && q.questionIndex === index)
+    );
+
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'UNLOCK_QUESTION',
@@ -753,42 +811,14 @@ function unlockQuestion(index) {
             collectionIndex: currentCollectionIndex
         }));
     }
-    saveStateToLocalStorage();
-    // Remove from locked questions
-    lockedQuestions = lockedQuestions.filter(q =>
-        !(q.collectionIndex === currentCollectionIndex && q.questionIndex === index)
-    );
-}
 
-function unlockAllQuestions() {
-    lockedQuestions.forEach(lock => {
-        const collection = collections[lock.collectionIndex];
-        if (collection && collection.locks[lock.questionIndex]) {
-            delete collection.locks[lock.questionIndex];
-        }
-    });
-    lockedQuestions = [];
-    // Update UI
+    // Update UI immediately
+    const currentCollection = getCurrentCollection();
+    delete currentCollection.locks[index];
+
     renderQuestions();
-}
-
-window.addEventListener('beforeunload', function (e) {
-    // Try to unlock via WebSocket if connected
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        lockedQuestions.forEach(lock => {
-            ws.send(JSON.stringify({
-                type: 'UNLOCK_QUESTION',
-                index: lock.questionIndex,
-                clientId: myClientId,
-                username: currentUsername,
-                collectionIndex: lock.collectionIndex
-            }));
-        });
-    }
-    // Always unlock locally
-    unlockAllQuestions();
     saveStateToLocalStorage();
-});
+}
 
 function deleteQuestion(index) {
     if (!currentUsername) {
@@ -807,9 +837,19 @@ function deleteQuestion(index) {
                 collectionIndex: currentCollectionIndex
             }));
         }
-    }
 
-    saveStateToLocalStorage();
+        // Remove locally immediately
+        const currentCollection = getCurrentCollection();
+        currentCollection.questions.splice(index, 1);
+
+        // Remove lock if exists
+        if (currentCollection.locks[index]) {
+            delete currentCollection.locks[index];
+        }
+
+        renderQuestions();
+        saveStateToLocalStorage();
+    }
 }
 
 function updateQuestion(index, field, value) {
@@ -831,6 +871,10 @@ function updateQuestion(index, field, value) {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    // Update locally immediately
+    const currentCollection = getCurrentCollection();
+    currentCollection.questions[index][field] = value;
 
     saveStateToLocalStorage();
     highlightMissingFields();
@@ -859,6 +903,15 @@ function updateChoice(index, choiceIndex, value) {
         }));
     }
 
+    // Update locally immediately
+    const currentCollection = getCurrentCollection();
+    currentCollection.questions[index].choices[choiceIndex] = value;
+
+    // Update correct answer if needed
+    if (currentCollection.questions[index].correct_answer === currentCollection.questions[index].choices[choiceIndex]) {
+        currentCollection.questions[index].correct_answer = value;
+    }
+
     saveStateToLocalStorage();
     highlightMissingFields();
 }
@@ -880,15 +933,16 @@ function handleImageUpload(index, e) {
     reader.onload = function (e) {
         const imageData = e.target.result;
 
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            // Create updated question object
-            const currentCollection = getCurrentCollection();
-            const updatedQuestion = { ...currentCollection.questions[index] };
-            updatedQuestion.feedback_images = [
-                ...updatedQuestion.feedback_images,
-                { image_data: imageData, filename: file.name }
-            ];
+        // Update locally immediately
+        const currentCollection = getCurrentCollection();
+        const updatedQuestion = { ...currentCollection.questions[index] };
+        updatedQuestion.feedback_images = [
+            ...updatedQuestion.feedback_images,
+            { image_data: imageData, filename: file.name }
+        ];
+        currentCollection.questions[index] = updatedQuestion;
 
+        if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'UPDATE_QUESTION',
                 index,
@@ -899,17 +953,22 @@ function handleImageUpload(index, e) {
                 collectionIndex: currentCollectionIndex
             }));
         }
+
+        renderQuestions();
+        saveStateToLocalStorage();
+        highlightMissingFields();
     };
     reader.readAsDataURL(file);
 }
 
 function removeFeedbackImage(index, imageIndex) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        // Create updated question object
-        const currentCollection = getCurrentCollection();
-        const updatedQuestion = { ...currentCollection.questions[index] };
-        updatedQuestion.feedback_images.splice(imageIndex, 1);
+    // Update locally immediately
+    const currentCollection = getCurrentCollection();
+    const updatedQuestion = { ...currentCollection.questions[index] };
+    updatedQuestion.feedback_images.splice(imageIndex, 1);
+    currentCollection.questions[index] = updatedQuestion;
 
+    if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
             type: 'UPDATE_QUESTION',
             index,
@@ -921,38 +980,15 @@ function removeFeedbackImage(index, imageIndex) {
         }));
     }
 
-    saveStateToLocalStorage();
+    renderQuestions();
+    saveStateTo极狐Storage();
     highlightMissingFields();
 }
 
 function updateQuestionCount() {
     const currentCollection = getCurrentCollection();
-    const totalQuestions = currentCollection.questions.length;
-
-    // Calculate visible questions
-    let visibleCount = totalQuestions;
-    if (activeFilter) {
-        visibleCount = 0;
-        currentCollection.questions.forEach(question => {
-            const tagMissing = question.tag.trim() === '';
-            const feedbackMissing = question.feedback_images.length === 0;
-
-            switch (activeFilter) {
-                case 'tag':
-                    if (tagMissing) visibleCount++;
-                    break;
-                case 'feedback':
-                    if (feedbackMissing) visibleCount++;
-                    break;
-                case 'both':
-                    if (tagMissing && feedbackMissing) visibleCount++;
-                    break;
-            }
-        });
-    }
-
     document.getElementById('questionCount').textContent =
-        `${visibleCount} of ${totalQuestions} questions visible`;
+        `${currentCollection.questions.length} questions loaded`;
 }
 
 function exportCSV() {
@@ -1049,6 +1085,13 @@ function clearActivityLog() {
             collectionIndex: currentCollectionIndex
         }));
     }
+
+    // Clear locally immediately
+    const currentCollection = getCurrentCollection();
+    currentCollection.activityLog = [];
+    updateActivityLogDisplay();
+
+    saveStateToLocalStorage();
 }
 
 function showAlert(message, type) {
@@ -1064,7 +1107,38 @@ function showAlert(message, type) {
     }, 5000);
 }
 
-// New filter functions
+function saveStateToLocalStorage() {
+    const state = {
+        collections,
+        currentCollectionIndex,
+        currentUsername,
+        currentRole,
+        lockedQuestions,
+        myClientId
+    };
+    localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
+}
+
+function loadStateFromLocalStorage() {
+    const savedState = localStorage.getItem(APP_STATE_KEY);
+    if (savedState) {
+        try {
+            const state = JSON.parse(savedState);
+            collections = state.collections || collections;
+            currentCollectionIndex = state.currentCollectionIndex || 0;
+            currentUsername = state.currentUsername || "";
+            currentRole = state.currentRole || null;
+            lockedQuestions = state.lockedQuestions || [];
+            myClientId = state.myClientId || myClientId;
+
+            return true;
+        } catch (e) {
+            console.error('Error loading saved state:', e);
+        }
+    }
+    return false;
+}
+
 function applyFilter() {
     const missingTag = document.getElementById('filter-missing-tag').checked;
     const missingFeedback = document.getElementById('filter-missing-feedback').checked;
@@ -1082,7 +1156,7 @@ function applyFilter() {
         activeFilter = null;
     }
 
-    renderQuestions();
+    highlightMissingFields();
 
     // Update button states
     document.getElementById('applyFilterBtn').classList.toggle('active', activeFilter !== null);
@@ -1111,6 +1185,7 @@ function clearFilter() {
 
 function highlightMissingFields() {
     const currentCollection = getCurrentCollection();
+
     // First remove all highlighting
     const questions = document.querySelectorAll('.question-card');
     questions.forEach(card => {
@@ -1119,14 +1194,19 @@ function highlightMissingFields() {
         });
         card.classList.remove('has-missing');
     });
+
     if (!activeFilter) return;
+
     // Apply new highlighting
     currentCollection.questions.forEach((question, index) => {
         const card = document.getElementById(`question-${index}`);
         if (!card) return;
+
         const tagMissing = question.tag.trim() === '';
         const feedbackMissing = question.feedback_images.length === 0;
+
         let shouldHighlight = false;
+
         switch (activeFilter) {
             case 'tag':
                 if (tagMissing) {
@@ -1154,12 +1234,52 @@ function highlightMissingFields() {
                 }
                 break;
         }
+
         // Add card highlight if any field is missing
         if (shouldHighlight) {
             card.classList.add('has-missing');
         }
     });
 }
+
+function unlockAllQuestions() {
+    // Unlock via WebSocket if connected
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        lockedQuestions.forEach(lock => {
+            ws.send(JSON.stringify({
+                type: 'UNLOCK_QUESTION',
+                index: lock.questionIndex,
+                clientId: myClientId,
+                username: currentUsername,
+                collectionIndex: lock.collectionIndex
+            }));
+        });
+    }
+
+    // Unlock locally
+    lockedQuestions.forEach(lock => {
+        const collection = collections[lock.collectionIndex];
+        if (collection && collection.locks[lock.questionIndex]) {
+            delete collection.locks[lock.questionIndex];
+        }
+    });
+
+    lockedQuestions = [];
+    saveStateToLocalStorage();
+    renderQuestions();
+}
+
+// Handle page/tab closing
+window.addEventListener('beforeunload', function () {
+    unlockAllQuestions();
+});
+
+// Handle page visibility changes
+document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') {
+        unlockAllQuestions();
+    }
+});
 
 // Initialize the application when the page loads
 window.addEventListener('load', init);
