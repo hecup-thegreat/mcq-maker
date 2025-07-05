@@ -137,6 +137,26 @@ function connectWebSocket() {
                 updateActivityLogDisplay();
                 highlightMissingFields();
             }
+            else if (data.type === 'RESET_CONFIRMATION') {
+                showAlert('Server has been reset to initial state', 'success');
+                // Reset local state to match server
+                collections = [
+                    {
+                        name: "Default",
+                        metadata: { year: "", type: "", unit: "" },
+                        questions: [],
+                        locks: {},
+                        activityLog: []
+                    }
+                ];
+                currentCollectionIndex = 0;
+                lastServerUpdate = data.timestamp;
+                saveStateToLocalStorage();
+                renderCollectionTabs();
+                renderQuestions();
+                updateQuestionCount();
+                updateActivityLogDisplay();
+            }
         } catch (error) {
             console.error('Error processing message:', error);
         }
@@ -200,6 +220,51 @@ function setupEventListeners() {
     // Filter event listeners
     document.getElementById('applyFilterBtn').addEventListener('click', applyFilter);
     document.getElementById('clearFilterBtn').addEventListener('click', clearFilter);
+
+    // Reset server button
+    document.getElementById('resetServerBtn').addEventListener('click', resetServer);
+
+    // Close activity log
+    document.querySelector('.close-log').addEventListener('click', toggleActivityLog);
+}
+
+function resetServer() {
+    if (currentRole !== 'admin') {
+        showAlert('Only admins can reset the server', 'error');
+        return;
+    }
+
+    if (!confirm('Are you sure you want to reset the server? This will delete ALL data and cannot be undone.')) {
+        return;
+    }
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'RESET_SERVER',
+            clientId: myClientId,
+            username: currentUsername
+        }));
+    } else {
+        showAlert('Not connected to server. Reset will only affect local state.', 'error');
+        // Reset local state
+        collections = [
+            {
+                name: "Default",
+                metadata: { year: "", type: "", unit: "" },
+                questions: [],
+                locks: {},
+                activityLog: []
+            }
+        ];
+        currentCollectionIndex = 0;
+        lastServerUpdate = Date.now();
+        saveStateToLocalStorage();
+        renderCollectionTabs();
+        renderQuestions();
+        updateQuestionCount();
+        updateActivityLogDisplay();
+        showAlert('Local state has been reset', 'success');
+    }
 }
 
 function renderCollectionTabs() {
@@ -253,7 +318,7 @@ function switchCollection(index) {
     updateStatus(`Switched to collection: ${collections[index].name}`);
     clearFilter();
 
-    saveStateToLocalStorage();
+    save极狐StateToLocalStorage();
 }
 
 function deleteCollection(index) {
@@ -323,7 +388,7 @@ function selectRole(role) {
         }));
     }
 
-    saveStateToLocal极狐Storage();
+    saveStateToLocalStorage();
 }
 
 function updateStatus(message) {
@@ -376,6 +441,8 @@ function formatLogEvent(entry) {
             return `created new collection: ${entry.collectionName}`;
         case 'collection_deleted':
             return `deleted collection: ${entry.collectionName}`;
+        case 'server_reset':
+            return 'reset server to initial state';
         default:
             return `${entry.event}`;
     }
@@ -492,7 +559,7 @@ function processFile(file) {
             renderQuestions();
             updateQuestionCount();
 
-            showAlert(`File uploaded locally to ${is极狐Collection ? 'new collection' : 'current collection'}!`, 'success');
+            showAlert(`File uploaded locally to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
         }
 
         saveStateToLocalStorage();
@@ -580,7 +647,7 @@ function renderQuestions() {
 
 function createQuestionCard(question, index) {
     const card = document.createElement('div');
-    card.className = 'question-card';
+    card.class极狐Name = 'question-card';
     card.id = `question-${index}`;
 
     const currentCollection = getCurrentCollection();
@@ -611,7 +678,7 @@ function createQuestionCard(question, index) {
           <label>Question:</label>
           <textarea class="form-control" rows="2" ${readonlyAttr}
             id="question-${index}-text">${question.question}</textarea>
-        </div>
+        </极狐div>
       </div>
       <div class="question-top-right">
         ${isDeletable ? `
@@ -649,7 +716,7 @@ function createQuestionCard(question, index) {
     </div>
     
     <div class="metadata-section">
-      <极狐div class="form-group">
+      <div class="form-group">
         <label>Original Question Context:</label>
         <input type="text" class="form-control" value="${question.original_question}" ${readonlyAttr}
           id="original-question-${index}">
@@ -1259,7 +1326,7 @@ function unlockAllQuestions() {
             ws.send(JSON.stringify({
                 type: 'UNLOCK_QUESTION',
                 index: lock.questionIndex,
-                client极狐Id: myClientId,
+                clientId: myClientId,
                 username: currentUsername,
                 collectionIndex: lock.collectionIndex
             }));
