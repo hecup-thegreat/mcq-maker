@@ -58,6 +58,14 @@ wss.on('connection', (ws) => {
                     handleCreateCollection(data);
                     break;
 
+                case 'DELETE_COLLECTION':
+                    handleDeleteCollection(data);
+                    break;
+
+                case 'DELETE_QUESTION':
+                    handleDeleteQuestion(data);
+                    break;
+
                 case 'ADD_ACTIVITY':
                     handleAddActivity(data);
                     break;
@@ -130,6 +138,44 @@ function handleUpdateQuestion(data) {
     }
 }
 
+function handleDeleteQuestion(data) {
+    const collection = appState.collections[data.collectionIndex];
+
+    // Check if the question is locked by the same client
+    if (collection.locks[data.index]?.clientId === data.clientId) {
+        // Remove the question
+        collection.questions.splice(data.index, 1);
+
+        // Remove any locks for this question
+        delete collection.locks[data.index];
+
+        // Adjust locks for subsequent questions
+        const newLocks = {};
+        Object.entries(collection.locks).forEach(([key, value]) => {
+            const idx = parseInt(key);
+            if (idx > data.index) {
+                newLocks[idx - 1] = value;
+            } else if (idx < data.index) {
+                newLocks[idx] = value;
+            }
+        });
+        collection.locks = newLocks;
+
+        // Log activity
+        const entry = {
+            timestamp: new Date().toISOString(),
+            event: 'question_deleted',
+            username: data.username,
+            question_index: data.index
+        };
+        collection.activityLog.push(entry);
+
+        broadcastState();
+    } else {
+        console.log('Question not deleted - not locked by requesting client');
+    }
+}
+
 function handleAddQuestions(data) {
     const collection = appState.collections[data.collectionIndex];
     // Append new questions to existing ones
@@ -172,6 +218,40 @@ function handleCreateCollection(data) {
         question_count: data.questions.length
     };
     newCollection.activityLog.push(entry);
+
+    broadcastState();
+}
+
+function handleDeleteCollection(data) {
+    if (appState.collections.length <= 1) {
+        return; // Cannot delete the last collection
+    }
+
+    const collectionIndex = data.collectionIndex;
+    const collectionName = appState.collections[collectionIndex].name;
+
+    // Remove the collection
+    appState.collections.splice(collectionIndex, 1);
+
+    // Adjust current collection index
+    if (appState.currentCollectionIndex >= collectionIndex) {
+        if (appState.currentCollectionIndex === collectionIndex) {
+            // If we deleted the current collection, switch to the first one
+            appState.currentCollectionIndex = 0;
+        } else {
+            // Adjust index if it was after the deleted collection
+            appState.currentCollectionIndex--;
+        }
+    }
+
+    // Log activity
+    const entry = {
+        timestamp: new Date().toISOString(),
+        event: 'collection_deleted',
+        username: data.username,
+        collectionName: collectionName
+    };
+    appState.collections[appState.currentCollectionIndex].activityLog.push(entry);
 
     broadcastState();
 }

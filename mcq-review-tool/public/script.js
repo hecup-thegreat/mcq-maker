@@ -121,13 +121,6 @@ function setupEventListeners() {
                     : 'none';
         });
     });
-
-    // Tab switching
-    document.getElementById('collectionTabs').addEventListener('click', (e) => {
-        if (e.target.classList.contains('tab-button')) {
-            switchCollection(parseInt(e.target.dataset.index));
-        }
-    });
 }
 
 function renderCollectionTabs() {
@@ -135,11 +128,31 @@ function renderCollectionTabs() {
     tabsContainer.innerHTML = '';
 
     collections.forEach((collection, index) => {
-        const tab = document.createElement('button');
-        tab.className = `tab-button ${index === currentCollectionIndex ? 'active' : ''}`;
-        tab.dataset.index = index;
-        tab.textContent = collection.name;
-        tabsContainer.appendChild(tab);
+        const tabContainer = document.createElement('div');
+        tabContainer.className = `tab-container ${index === currentCollectionIndex ? 'active' : ''}`;
+        tabContainer.dataset.index = index;
+
+        const tabButton = document.createElement('button');
+        tabButton.className = 'tab-button';
+        tabButton.textContent = collection.name;
+        tabButton.addEventListener('click', () => {
+            switchCollection(index);
+        });
+
+        // Only show delete button if admin and there's more than one collection
+        if (currentRole === 'admin' && collections.length > 1) {
+            const deleteButton = document.createElement('button');
+            deleteButton.className = 'delete-tab';
+            deleteButton.innerHTML = '×';
+            deleteButton.addEventListener('click', (e) => {
+                e.stopPropagation();
+                deleteCollection(index);
+            });
+            tabContainer.appendChild(deleteButton);
+        }
+
+        tabContainer.insertBefore(tabButton, tabContainer.firstChild);
+        tabsContainer.appendChild(tabContainer);
     });
 }
 
@@ -150,6 +163,23 @@ function switchCollection(index) {
     updateQuestionCount();
     updateActivityLogDisplay();
     updateStatus(`Switched to collection: ${collections[index].name}`);
+}
+
+function deleteCollection(index) {
+    if (collections.length <= 1) {
+        showAlert('Cannot delete the last collection', 'error');
+        return;
+    }
+
+    if (confirm(`Are you sure you want to delete "${collections[index].name}" collection?`)) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'DELETE_COLLECTION',
+                collectionIndex: index,
+                username: currentUsername
+            }));
+        }
+    }
 }
 
 function getCurrentCollection() {
@@ -230,12 +260,16 @@ function formatLogEvent(entry) {
             return `locked question ${entry.question_index + 1}`;
         case 'question_unlocked':
             return `unlocked question ${entry.question_index + 1}`;
+        case 'question_deleted':
+            return `deleted question ${entry.question_index + 1}`;
         case 'csv_exported':
             return 'exported CSV file';
         case 'log_cleared':
             return 'cleared activity log';
         case 'collection_created':
             return `created new collection: ${entry.collectionName}`;
+        case 'collection_deleted':
+            return `deleted collection: ${entry.collectionName}`;
         default:
             return `${entry.event}`;
     }
@@ -434,6 +468,7 @@ function createQuestionCard(question, index) {
     const isEditable = currentRole && (!isLocked || isLockedByMe);
     const readonlyAttr = isEditable ? '' : 'readonly';
     const disabledAttr = isEditable ? '' : 'disabled';
+    const isDeletable = currentRole === 'admin' && (!isLocked || isLockedByMe);
 
     card.innerHTML = `
     ${lockIndicator}
@@ -445,6 +480,16 @@ function createQuestionCard(question, index) {
           <textarea class="form-control" rows="2" ${readonlyAttr}
             id="question-${index}-text">${question.question}</textarea>
         </div>
+      </div>
+      <div class="question-top-right">
+        ${isDeletable ? `
+          <button class="delete-question-btn" id="delete-btn-${index}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            Delete
+          </button>
+        ` : ''}
       </div>
     </div>
     
@@ -588,6 +633,13 @@ function createQuestionCard(question, index) {
         });
     }
 
+    // Delete button
+    if (card.querySelector(`#delete-btn-${index}`)) {
+        card.querySelector(`#delete-btn-${index}`).addEventListener('click', () => {
+            deleteQuestion(index);
+        });
+    }
+
     return card;
 }
 
@@ -618,6 +670,26 @@ function unlockQuestion(index) {
             username: currentUsername,
             collectionIndex: currentCollectionIndex
         }));
+    }
+}
+
+function deleteQuestion(index) {
+    if (!currentUsername) {
+        showAlert('Please enter your username first', 'error');
+        showUsernameModal();
+        return;
+    }
+
+    if (confirm('Are you sure you want to delete this question? This action cannot be undone.')) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                type: 'DELETE_QUESTION',
+                index,
+                clientId: myClientId,
+                username: currentUsername,
+                collectionIndex: currentCollectionIndex
+            }));
+        }
     }
 }
 
