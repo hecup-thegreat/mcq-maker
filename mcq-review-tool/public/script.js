@@ -17,6 +17,7 @@ let reconnectAttempts = 0;
 let activeFilter = null;
 const APP_STATE_KEY = 'mcq_app_state';
 let lockedQuestions = [];
+let lastServerUpdate = 0; // Timestamp of last server update
 
 // Initialize the application
 function init() {
@@ -70,7 +71,6 @@ function showUsernameModal() {
 }
 
 function connectWebSocket() {
-    // Use wss:// for production, ws:// for local development
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(`${protocol}${window.location.host}`);
 
@@ -78,51 +78,64 @@ function connectWebSocket() {
         updateStatus('Connected to server');
         reconnectAttempts = 0;
 
-        // Send current state to server
+        // Request current server state
         ws.send(JSON.stringify({
-            type: 'STATE_UPDATE',
-            state: {
-                collections,
-                currentCollectionIndex
-            }
+            type: 'REQUEST_STATE',
+            clientId: myClientId,
+            lastUpdate: lastServerUpdate
         }));
-
-        // Restore locks after reconnect
-        lockedQuestions.forEach(lock => {
-            ws.send(JSON.stringify({
-                type: 'LOCK_QUESTION',
-                index: lock.questionIndex,
-                clientId: myClientId,
-                username: currentUsername,
-                collectionIndex: lock.collectionIndex
-            }));
-        });
     };
 
     ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
 
-            if (data.type === 'INITIAL_STATE' || data.type === 'STATE_UPDATE') {
-                // Merge with local state instead of overwriting
-                const serverCollections = data.state.collections || [];
-                const serverCurrentIndex = data.state.currentCollectionIndex || 0;
+            if (data.type === 'FULL_STATE') {
+                // Full state synchronization
+                lastServerUpdate = data.timestamp;
+                collections = data.state.collections || [];
+                currentCollectionIndex = data.state.currentCollectionIndex || 0;
 
-                // Update collections only if server has more data
-                if (serverCollections.length > collections.length ||
-                    serverCollections.some((c, i) => c.questions.length > (collections[i]?.questions.length || 0))) {
-                    collections = serverCollections;
-                    currentCollectionIndex = serverCurrentIndex;
+                saveStateToLocalStorage();
+                renderCollectionTabs();
+                renderQuestions();
+                updateQuestionCount();
+                updateActivityLogDisplay();
+                highlightMissingFields();
+            }
+            else if (data.type === 'STATE_UPDATE') {
+                // Handle incremental updates
+                lastServerUpdate = data.timestamp;
 
-                    // Save merged state
-                    saveStateToLocalStorage();
+                if (data.collectionIndex !== undefined) {
+                    const collection = collections[data.collectionIndex];
 
-                    renderCollectionTabs();
-                    renderQuestions();
-                    updateQuestionCount();
-                    updateActivityLogDisplay();
-                    highlightMissingFields();
+                    if (data.action === 'ADD_QUESTIONS') {
+                        collection.questions.push(...data.questions);
+                    }
+                    else if (data.action === 'UPDATE_QUESTION') {
+                        collection.questions[data.index] = data.question;
+                    }
+                    else if (data.action === 'DELETE_QUESTION') {
+                        collection.questions.splice(data.index, 1);
+                    }
+                    else if (data.action === 'LOCK_QUESTION') {
+                        collection.locks[data.index] = data.lockInfo;
+                    }
+                    else if (data.action === 'UNLOCK_QUESTION') {
+                        delete collection.locks[data.index];
+                    }
+                    else if (data.action === 'ADD_ACTIVITY') {
+                        collection.activityLog.push(data.entry);
+                    }
                 }
+
+                saveStateToLocalStorage();
+                renderCollectionTabs();
+                renderQuestions();
+                updateQuestionCount();
+                updateActivityLogDisplay();
+                highlightMissingFields();
             }
         } catch (error) {
             console.error('Error processing message:', error);
@@ -310,7 +323,7 @@ function selectRole(role) {
         }));
     }
 
-    saveStateToLocalStorage();
+    saveStateToLocal极狐Storage();
 }
 
 function updateStatus(message) {
@@ -437,10 +450,13 @@ function processFile(file) {
         // Send to server
         if (ws && ws.readyState === WebSocket.OPEN) {
             const payload = {
-                type: isNewCollection ? 'CREATE_COLLECTION' : 'ADD_QUESTIONS',
+                type: 'STATE_UPDATE',
+                action: isNewCollection ? 'CREATE_COLLECTION' : 'ADD_QUESTIONS',
                 questions: parsedQuestions,
                 username: currentUsername,
-                filename: file.name
+                filename: file.name,
+                clientId: myClientId,
+                collectionIndex: isNewCollection ? -1 : currentCollectionIndex
             };
 
             if (isNewCollection) {
@@ -449,8 +465,6 @@ function processFile(file) {
                     type: document.getElementById('collectionType').value.trim(),
                     unit: document.getElementById('collectionUnit').value.trim()
                 };
-            } else {
-                payload.collectionIndex = currentCollectionIndex;
             }
 
             ws.send(JSON.stringify(payload));
@@ -478,7 +492,7 @@ function processFile(file) {
             renderQuestions();
             updateQuestionCount();
 
-            showAlert(`File uploaded locally to ${isNewCollection ? 'new collection' : 'current collection'}!`, 'success');
+            showAlert(`File uploaded locally to ${is极狐Collection ? 'new collection' : 'current collection'}!`, 'success');
         }
 
         saveStateToLocalStorage();
@@ -635,7 +649,7 @@ function createQuestionCard(question, index) {
     </div>
     
     <div class="metadata-section">
-      <div class="form-group">
+      <极狐div class="form-group">
         <label>Original Question Context:</label>
         <input type="text" class="form-control" value="${question.original_question}" ${readonlyAttr}
           id="original-question-${index}">
@@ -853,28 +867,22 @@ function deleteQuestion(index) {
 }
 
 function updateQuestion(index, field, value) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        // Create updated question object
-        const currentCollection = getCurrentCollection();
-        const updatedQuestion = {
-            ...currentCollection.questions[index],
-            [field]: value
-        };
-
-        ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
-            index,
-            question: updatedQuestion,
-            clientId: myClientId,
-            username: currentUsername,
-            field,
-            collectionIndex: currentCollectionIndex
-        }));
-    }
-
-    // Update locally immediately
     const currentCollection = getCurrentCollection();
     currentCollection.questions[index][field] = value;
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'STATE_UPDATE',
+            action: 'UPDATE_QUESTION',
+            collectionIndex: currentCollectionIndex,
+            index,
+            field,
+            value,
+            clientId: myClientId,
+            username: currentUsername,
+            question: currentCollection.questions[index]
+        }));
+    }
 
     saveStateToLocalStorage();
     highlightMissingFields();
@@ -981,7 +989,7 @@ function removeFeedbackImage(index, imageIndex) {
     }
 
     renderQuestions();
-    saveStateTo极狐Storage();
+    saveStateToLocalStorage();
     highlightMissingFields();
 }
 
@@ -1114,7 +1122,8 @@ function saveStateToLocalStorage() {
         currentUsername,
         currentRole,
         lockedQuestions,
-        myClientId
+        myClientId,
+        lastServerUpdate
     };
     localStorage.setItem(APP_STATE_KEY, JSON.stringify(state));
 }
@@ -1130,6 +1139,7 @@ function loadStateFromLocalStorage() {
             currentRole = state.currentRole || null;
             lockedQuestions = state.lockedQuestions || [];
             myClientId = state.myClientId || myClientId;
+            lastServerUpdate = state.lastServerUpdate || 0;
 
             return true;
         } catch (e) {
@@ -1249,7 +1259,7 @@ function unlockAllQuestions() {
             ws.send(JSON.stringify({
                 type: 'UNLOCK_QUESTION',
                 index: lock.questionIndex,
-                clientId: myClientId,
+                client极狐Id: myClientId,
                 username: currentUsername,
                 collectionIndex: lock.collectionIndex
             }));
