@@ -14,6 +14,7 @@ let currentCollectionIndex = 0;
 let myClientId = 'client_' + Math.random().toString(36).substr(2, 9);
 let ws = null;
 let reconnectAttempts = 0;
+let activeFilter = null; // 'tag', 'feedback', 'both', or null
 
 // Initialize the application
 function init() {
@@ -121,6 +122,10 @@ function setupEventListeners() {
                     : 'none';
         });
     });
+
+    // New filter event listeners
+    document.getElementById('applyFilterBtn').addEventListener('click', applyFilter);
+    document.getElementById('clearFilterBtn').addEventListener('click', clearFilter);
 }
 
 function renderCollectionTabs() {
@@ -163,6 +168,7 @@ function switchCollection(index) {
     updateQuestionCount();
     updateActivityLogDisplay();
     updateStatus(`Switched to collection: ${collections[index].name}`);
+    clearFilter(); // Clear filter when switching collections
 }
 
 function deleteCollection(index) {
@@ -441,7 +447,33 @@ function renderQuestions() {
 
     const currentCollection = getCurrentCollection();
     currentCollection.questions.forEach((question, index) => {
-        container.appendChild(createQuestionCard(question, index));
+        const questionCard = createQuestionCard(question, index);
+
+        // Apply filter if active
+        if (activeFilter) {
+            const tagMissing = question.tag.trim() === '';
+            const feedbackMissing = question.feedback_images.length === 0;
+
+            let shouldShow = false;
+
+            switch (activeFilter) {
+                case 'tag':
+                    shouldShow = tagMissing;
+                    break;
+                case 'feedback':
+                    shouldShow = feedbackMissing;
+                    break;
+                case 'both':
+                    shouldShow = tagMissing && feedbackMissing;
+                    break;
+            }
+
+            if (!shouldShow) {
+                questionCard.style.display = 'none';
+            }
+        }
+
+        container.appendChild(questionCard);
     });
     updateQuestionCount();
 }
@@ -470,6 +502,7 @@ function createQuestionCard(question, index) {
     const disabledAttr = isEditable ? '' : 'disabled';
     const isDeletable = currentRole === 'admin' && (!isLocked || isLockedByMe);
 
+    // Modify the metadata section in the createQuestionCard function
     card.innerHTML = `
     ${lockIndicator}
     <div class="question-header">
@@ -563,7 +596,7 @@ function createQuestionCard(question, index) {
         </button>
       ` : ''}
     </div>
-  `;
+`;
 
     // Add event listeners
     if (isEditable) {
@@ -799,7 +832,32 @@ function removeFeedbackImage(index, imageIndex) {
 
 function updateQuestionCount() {
     const currentCollection = getCurrentCollection();
-    document.getElementById('questionCount').textContent = `${currentCollection.questions.length} questions loaded`;
+    const totalQuestions = currentCollection.questions.length;
+
+    // Calculate visible questions
+    let visibleCount = totalQuestions;
+    if (activeFilter) {
+        visibleCount = 0;
+        currentCollection.questions.forEach(question => {
+            const tagMissing = question.tag.trim() === '';
+            const feedbackMissing = question.feedback_images.length === 0;
+
+            switch (activeFilter) {
+                case 'tag':
+                    if (tagMissing) visibleCount++;
+                    break;
+                case 'feedback':
+                    if (feedbackMissing) visibleCount++;
+                    break;
+                case 'both':
+                    if (tagMissing && feedbackMissing) visibleCount++;
+                    break;
+            }
+        });
+    }
+
+    document.getElementById('questionCount').textContent =
+        `${visibleCount} of ${totalQuestions} questions visible`;
 }
 
 function exportCSV() {
@@ -909,6 +967,44 @@ function showAlert(message, type) {
     setTimeout(() => {
         alertDiv.remove();
     }, 5000);
+}
+
+// New filter functions
+function applyFilter() {
+    const missingTag = document.getElementById('filter-missing-tag').checked;
+    const missingFeedback = document.getElementById('filter-missing-feedback').checked;
+    const bothMissing = document.getElementById('filter-both-missing').checked;
+
+    if (bothMissing) {
+        activeFilter = 'both';
+    } else if (missingTag && missingFeedback) {
+        activeFilter = 'both';
+    } else if (missingTag) {
+        activeFilter = 'tag';
+    } else if (missingFeedback) {
+        activeFilter = 'feedback';
+    } else {
+        activeFilter = null;
+    }
+
+    renderQuestions();
+
+    // Update button states
+    document.getElementById('applyFilterBtn').classList.toggle('active', activeFilter !== null);
+    document.getElementById('clearFilterBtn').classList.toggle('active', activeFilter !== null);
+}
+
+function clearFilter() {
+    document.getElementById('filter-missing-tag').checked = false;
+    document.getElementById('filter-missing-feedback').checked = false;
+    document.getElementById('filter-both-missing').checked = false;
+    activeFilter = null;
+
+    renderQuestions();
+
+    // Update button states
+    document.getElementById('applyFilterBtn').classList.remove('active');
+    document.getElementById('clearFilterBtn').classList.remove('active');
 }
 
 // Initialize the application when the page loads
