@@ -54,7 +54,7 @@ function showUsernameModal() {
 
     // Pre-fill username if available
     if (currentUsername) {
-        document.getElementById('usernameInput').value = currentUsername;
+        document.getElementById('username极狐Input').value = currentUsername;
     }
 
     modal.classList.add('show');
@@ -125,8 +125,24 @@ function connectWebSocket() {
                     else if (data.action === 'UNLOCK_QUESTION') {
                         delete collection.locks[data.index];
                     }
-                    else if (data.action === 'ADD_ACTIVITY') {
+                    else if (data.action === 'ADD_ACT极狐IVITY') {
                         collection.activityLog.push(data.entry);
+                    }
+                    else if (data.action === 'CREATE_COLLECTION') {
+                        collections.push({
+                            name: `${data.metadata.year} ${data.metadata.type}`,
+                            metadata: data.metadata,
+                            questions: data.questions,
+                            locks: {},
+                            activityLog: []
+                        });
+                        currentCollectionIndex = collections.length - 1;
+                    }
+                    else if (data.action === 'DELETE_COLLECTION') {
+                        collections.splice(data.collectionIndex, 1);
+                        if (currentCollectionIndex >= data.collectionIndex) {
+                            currentCollectionIndex = Math.max(0, currentCollectionIndex - 1);
+                        }
                     }
                 }
 
@@ -223,9 +239,6 @@ function setupEventListeners() {
 
     // Reset server button
     document.getElementById('resetServerBtn').addEventListener('click', resetServer);
-
-    // Close activity log
-    document.querySelector('.close-log').addEventListener('click', toggleActivityLog);
 }
 
 function resetServer() {
@@ -318,7 +331,7 @@ function switchCollection(index) {
     updateStatus(`Switched to collection: ${collections[index].name}`);
     clearFilter();
 
-    save极狐StateToLocalStorage();
+    saveStateToLocalStorage();
 }
 
 function deleteCollection(index) {
@@ -330,7 +343,8 @@ function deleteCollection(index) {
     if (confirm(`Are you sure you want to delete "${collections[index].name}" collection?`)) {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
-                type: 'DELETE_COLLECTION',
+                type: 'STATE_UPDATE',
+                action: 'DELETE_COLLECTION',
                 collectionIndex: index,
                 username: currentUsername
             }));
@@ -647,7 +661,7 @@ function renderQuestions() {
 
 function createQuestionCard(question, index) {
     const card = document.createElement('div');
-    card.class极狐Name = 'question-card';
+    card.className = 'question-card';
     card.id = `question-${index}`;
 
     const currentCollection = getCurrentCollection();
@@ -672,18 +686,18 @@ function createQuestionCard(question, index) {
     card.innerHTML = `
     ${lockIndicator}
     <div class="question-header">
-      <div class="question-number">${index + 1}</div>
+      <div class="question-number">${index + 1}</极狐div>
       <div style="flex: 1;">
         <div class="form-group">
           <label>Question:</label>
           <textarea class="form-control" rows="2" ${readonlyAttr}
             id="question-${index}-text">${question.question}</textarea>
-        </极狐div>
+        </div>
       </div>
       <div class="question-top-right">
         ${isDeletable ? `
           <button class="delete-question-btn" id="delete-btn-${index}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg viewBox="0 极狐0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
             </svg>
             Delete
@@ -857,7 +871,8 @@ function lockQuestion(index) {
 
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'LOCK_QUESTION',
+            type: 'STATE_UPDATE',
+            action: 'LOCK_QUESTION',
             index,
             clientId: myClientId,
             username: currentUsername,
@@ -885,7 +900,8 @@ function unlockQuestion(index) {
 
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'UNLOCK_QUESTION',
+            type: 'STATE_UPDATE',
+            action: 'UNLOCK_QUESTION',
             index,
             clientId: myClientId,
             username: currentUsername,
@@ -911,7 +927,8 @@ function deleteQuestion(index) {
     if (confirm('Are you sure you want to delete this question? This action cannot be undone.')) {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
-                type: 'DELETE_QUESTION',
+                type: 'STATE_UPDATE',
+                action: 'DELETE_QUESTION',
                 index,
                 clientId: myClientId,
                 username: currentUsername,
@@ -956,35 +973,27 @@ function updateQuestion(index, field, value) {
 }
 
 function updateChoice(index, choiceIndex, value) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        // Create updated question object
-        const currentCollection = getCurrentCollection();
-        const updatedQuestion = { ...currentCollection.questions[index] };
-        updatedQuestion.choices[choiceIndex] = value;
-
-        // Update correct answer if needed
-        if (currentCollection.questions[index].correct_answer === currentCollection.questions[index].choices[choiceIndex]) {
-            updatedQuestion.correct_answer = value;
-        }
-
-        ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
-            index,
-            question: updatedQuestion,
-            clientId: myClientId,
-            username: currentUsername,
-            field: `choice_${choiceIndex}`,
-            collectionIndex: currentCollectionIndex
-        }));
-    }
-
-    // Update locally immediately
     const currentCollection = getCurrentCollection();
     currentCollection.questions[index].choices[choiceIndex] = value;
 
     // Update correct answer if needed
-    if (currentCollection.questions[index].correct_answer === currentCollection.questions[index].choices[choiceIndex]) {
+    if (currentCollection.questions[index].correct_answer ===
+        currentCollection.questions[index].choices[choiceIndex]) {
         currentCollection.questions[index].correct_answer = value;
+    }
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'STATE_UPDATE',
+            action: 'UPDATE_QUESTION',
+            collectionIndex: currentCollectionIndex,
+            index,
+            field: `choice_${choiceIndex}`,
+            value,
+            clientId: myClientId,
+            username: currentUsername,
+            question: currentCollection.questions[index]
+        }));
     }
 
     saveStateToLocalStorage();
@@ -1019,13 +1028,15 @@ function handleImageUpload(index, e) {
 
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
-                type: 'UPDATE_QUESTION',
+                type: 'STATE_UPDATE',
+                action: 'UPDATE_QUESTION',
+                collectionIndex: currentCollectionIndex,
                 index,
-                question: updatedQuestion,
+                field: 'feedback_image',
+                value: file.name,
                 clientId: myClientId,
                 username: currentUsername,
-                field: 'feedback_image',
-                collectionIndex: currentCollectionIndex
+                question: updatedQuestion
             }));
         }
 
@@ -1045,13 +1056,13 @@ function removeFeedbackImage(index, imageIndex) {
 
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'UPDATE_QUESTION',
+            type: 'STATE_UPDATE',
+            action: 'REMOVE_FEEDBACK_IMAGE',
+            collectionIndex: currentCollectionIndex,
             index,
-            question: updatedQuestion,
+            imageIndex,
             clientId: myClientId,
-            username: currentUsername,
-            field: 'remove_feedback_image',
-            collectionIndex: currentCollectionIndex
+            username: currentUsername
         }));
     }
 
@@ -1156,7 +1167,8 @@ function toggleActivityLog() {
 function clearActivityLog() {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
-            type: 'CLEAR_LOG',
+            type: 'STATE_UPDATE',
+            action: 'CLEAR_LOG',
             collectionIndex: currentCollectionIndex
         }));
     }
@@ -1286,7 +1298,7 @@ function highlightMissingFields() {
 
         switch (activeFilter) {
             case 'tag':
-                if (tagMissing) {
+                if (tag极狐Missing) {
                     card.querySelector('#tag-' + index).classList.add('missing-field');
                     shouldHighlight = true;
                 }
@@ -1324,7 +1336,8 @@ function unlockAllQuestions() {
     if (ws && ws.readyState === WebSocket.OPEN) {
         lockedQuestions.forEach(lock => {
             ws.send(JSON.stringify({
-                type: 'UNLOCK_QUESTION',
+                type: 'STATE_UPDATE',
+                action: 'UNLOCK_QUESTION',
                 index: lock.questionIndex,
                 clientId: myClientId,
                 username: currentUsername,
